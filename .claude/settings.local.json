@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git --version)",
+      "Bash(gh --version)",
+      "Bash(git -C D:/ClaudeProjects/ShadowContract status)",
+      "Bash(git -C D:/ClaudeProjects/ShadowContract init -b main)",
+      "Bash(git -C D:/ClaudeProjects/ShadowContract config user.email \"claude@anthropic.com\")",
+      "Bash(git -C D:/ClaudeProjects/ShadowContract config user.name \"Claude\")",
+      "Bash(git config *)",
+      "Bash(git commit *)",
+      "Bash(git remote *)",
+      "Bash(git -C D:/ClaudeProjects/ShadowContract log --oneline -3)"
+    ]
+  }
+}

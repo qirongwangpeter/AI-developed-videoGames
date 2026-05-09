@@ -871,18 +871,18 @@ function buildOfficeTower(x, z, opts){
       grp.add(riser);
       addSurface(x + sX1, z + fz, x + sX2, z + fz + SDEP, topY);
     }
-    // 斜底
+    // 斜底（修正：南低北高）
     const stairLen = Math.sqrt(SDEP*7 * SDEP*7 + fH*fH);
     const stairAng = Math.atan2(fH, SDEP*7);
     const sof = new THREE.Mesh(new THREE.BoxGeometry(sX2-sX1, 0.08, stairLen), sideMat);
-    sof.rotation.x = stairAng;
+    sof.rotation.x = -stairAng;
     sof.position.set((sX1+sX2)/2, baseY + fH/2 - 0.30*Math.cos(stairAng),
-                     (sZ1+sZ2)/2 + 0.30*Math.sin(stairAng));
+                     (sZ1+sZ2)/2 - 0.30*Math.sin(stairAng));
     grp.add(sof);
     // 楼梯井两侧扶手（仅装饰）
     for(const sxk of [sX1+0.05, sX2-0.05]){
       const stringer = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.4, stairLen), sideMat);
-      stringer.rotation.x = stairAng;
+      stringer.rotation.x = -stairAng;
       stringer.position.set(sxk, baseY + fH/2, (sZ1+sZ2)/2);
       grp.add(stringer);
     }
@@ -1060,17 +1060,14 @@ function buildPerimeterFence(BZ){
   const postMat = sharedMat({color:0x2a2a2a, metalness:0.6, roughness:0.4});
   // 矩形外圈：南 z=BZ-32（外推），北 z=BZ+28，东 x=46，西 x=-46
   const SOUTH = BZ - 32, NORTH = BZ + 28, WEST = -46, EAST = 46;
+  // 南面完全开放（机枪手射界），仅东/西/北三面铁丝网
   const segments = [
-    // 南墙左段（西到门西边）
-    [WEST,  SOUTH, -3,    SOUTH],
-    // 南墙右段（门东边到东端）
-    [3,     SOUTH, EAST,  SOUTH],
     // 北墙
     [WEST,  NORTH, EAST,  NORTH],
-    // 西墙
-    [WEST,  SOUTH, WEST,  NORTH],
-    // 东墙
-    [EAST,  SOUTH, EAST,  NORTH],
+    // 西墙（仅 BZ-22 以北，南端给机枪手射界让位）
+    [WEST,  BZ-22, WEST,  NORTH],
+    // 东墙（同样仅 BZ-22 以北）
+    [EAST,  BZ-22, EAST,  NORTH],
   ];
   for(const [x1,z1,x2,z2] of segments){
     const len = Math.hypot(x2-x1, z2-z1);
@@ -1102,19 +1099,7 @@ function buildPerimeterFence(BZ){
       state.scene.add(post);
     }
   }
-  // 南面大门两侧门柱（高一些）
-  for(const gx of [-3, 3]){
-    const gp = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.20, 3.2, 8),
-      sharedMat({color:0xc8302a, metalness:0.5, roughness:0.5}));
-    gp.position.set(gx, 1.6, SOUTH);
-    gp.castShadow = true;
-    state.scene.add(gp);
-  }
-  // 大门门牌（横梁）
-  const gateBeam = new THREE.Mesh(new THREE.BoxGeometry(7, 0.3, 0.2),
-    sharedMat({color:0xc8302a, metalness:0.5, roughness:0.5}));
-  gateBeam.position.set(0, 3.3, SOUTH);
-  state.scene.add(gateBeam);
+  // 南面完全开放 — 机枪火力直达战场，不放门柱/横梁
 }
 
 function buildANWTower(x, z){
@@ -1180,19 +1165,18 @@ function buildANWTower(x, z){
     grp.add(riser);
     addSurface(x+5-1.25, z+fz, x+5+1.25, z+fz+SDEP, topY);
   }
-  // 斜底（楼梯底面板）— 沿楼梯斜率覆盖底部
+  // 斜底（楼梯底面板）— 沿楼梯斜率覆盖底部，南低北高，与踏面方向一致
   const stairLen = Math.sqrt(6*6 + 4*4);          // 7.211
   const stairAngle = Math.atan2(4, 6);            // 0.588 rad
   const soffit = new THREE.Mesh(new THREE.BoxGeometry(2.5, 0.1, stairLen), sideMat);
-  soffit.rotation.x = stairAngle;
-  // 斜面中心：z=(−2+4)/2=1，y 应在踏面下方约 0.35m（沿法线方向）
-  soffit.position.set(5, 2 - 0.35*Math.cos(stairAngle), 1 + 0.35*Math.sin(stairAngle));
+  soffit.rotation.x = -stairAngle;                // 修正：+Z 端朝上（北高）
+  soffit.position.set(5, 2 - 0.35*Math.cos(stairAngle), 1 - 0.35*Math.sin(stairAngle));
   soffit.castShadow = soffit.receiveShadow = true;
   grp.add(soffit);
-  // 两侧侧板（梯形：用矩形替代，靠墙故底部超出无视觉问题）
+  // 两侧侧板
   for(const sx of [3.78, 6.22]){
     const stringer = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.5, stairLen), sideMat);
-    stringer.rotation.x = stairAngle;
+    stringer.rotation.x = -stairAngle;            // 修正：方向与踏面同向
     stringer.position.set(sx, 2 - 0.05, 1);
     stringer.castShadow = true;
     grp.add(stringer);
@@ -2712,6 +2696,20 @@ function makePickup(x,z,type,subtype){
     mesh=new THREE.Mesh(new THREE.BoxGeometry(0.4,0.2,0.3),new THREE.MeshStandardMaterial({color:0xcccccc,emissive:0xaa0000,emissiveIntensity:0.4}));
   } else if(type==='ammo'){
     mesh=new THREE.Mesh(new THREE.BoxGeometry(0.5,0.3,0.35),new THREE.MeshStandardMaterial({color:0x4a5a3a,emissive:0xffaa44,emissiveIntensity:0.25}));
+  } else if(type==='gold'){
+    mesh=new THREE.Mesh(new THREE.CylinderGeometry(0.18,0.18,0.06,16),
+      new THREE.MeshStandardMaterial({color:0xf0c020,metalness:0.85,roughness:0.25,emissive:0xffaa00,emissiveIntensity:0.45}));
+    mesh.rotation.x=Math.PI/2;
+  } else if(type==='food'){
+    // 罐头（铝筒 + 红色标签）
+    const can=new THREE.Group();
+    const body=new THREE.Mesh(new THREE.CylinderGeometry(0.13,0.13,0.22,12),
+      new THREE.MeshStandardMaterial({color:0xcccccc,metalness:0.8,roughness:0.3}));
+    can.add(body);
+    const label=new THREE.Mesh(new THREE.CylinderGeometry(0.131,0.131,0.12,12,1,true),
+      new THREE.MeshStandardMaterial({color:0xc8302a,emissive:0x441010,emissiveIntensity:0.3}));
+    can.add(label);
+    mesh=can;
   } else {
     mesh=viewmodelGun(subtype); mesh.scale.setScalar(2); mesh.rotation.z=-Math.PI/2;
   }
@@ -4128,9 +4126,9 @@ function spawnRaidVehicle(suicide){
   v.position.set(sx, 0, -115); // z=-115 在 Sheffield 所有沙袋以北
   v.rotation.y = Math.PI; // 朝 +Z（向北）
   state.scene.add(v);
-  // 停车点：ANW 基地南方 ~30m（z=170）— 距基地最前沿沙袋阵地（z≈180）约 10m
-  const parkX = (Math.random() - 0.5) * 30;
-  const parkZ = suicide ? 195 : 168;
+  // 停车点：远在 ANW 基地南方 ~70m（z=130），让机枪手有充分时间打击
+  const parkX = (Math.random() - 0.5) * 36;
+  const parkZ = 130;
   _raidVehicles.push({
     group: v, pos: v.position, yaw: Math.PI,
     target: new THREE.Vector3(parkX, 0, parkZ),
@@ -4149,10 +4147,10 @@ function spawnRaidEnemy(x, z){
   state.enemies.push({
     group: ch, type: 'rifle', weapon: 'AK47',
     pos: ch.position, yaw: Math.PI,
-    hp: 90, maxHp: 90, range: 35, fireRate: 800, accuracy: 0.45, dmg: 9, speed: 3,
+    hp: 90, maxHp: 90, range: 60, fireRate: 800, accuracy: 0.5, dmg: 9, speed: 3,
     armor: 0, armorMax: 0, helmetArmor: 0, helmetArmorMax: 0,
     state: 'aggro', target: null, lastShot: 0, hitFlash: 0, marked: 0,
-    detectRange: 50, raged: false, active: true,
+    detectRange: 90, raged: false, active: true,
     placement: [x, z, 'rifle'], isRaider: true,
   });
 }
