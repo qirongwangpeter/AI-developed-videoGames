@@ -70,6 +70,7 @@
     <div class="row"><span class="lbl">防弹衣</span><span class="val" id="iv-vest">无</span></div>
     <div class="row"><span class="lbl">手雷</span><span class="val" id="iv-grenade">3</span></div>
     <div class="row"><span class="lbl">医疗包</span><span class="val" id="iv-medkit">2</span></div>
+    <div class="row"><span class="lbl" style="color:#ffd24a">金币</span><span class="val" id="iv-gold" style="color:#ffd24a">0</span></div>
   </div>
   <div id="vehicle-hud">
     <div style="font-weight:bold;letter-spacing:2px">悍马 HUMVEE</div>
@@ -1002,6 +1003,111 @@ function decorateOfficeFloor(grp, ox, oz, w, d, fy, sX1, sX2, sZ1, sZ2, seed){
     const lt = new THREE.PointLight(0xffe8a0, 0.4, 12);
     lt.position.set(0, surfY + 2.6, 0); grp.add(lt);
   }
+  // 战利品 + 守卫（仅在开局完成后注册到 PENDING 列表，统一在世界生成完成后落实）
+  state.pendingBuildingLoot = state.pendingBuildingLoot || [];
+  // 1-2 名敌人随机类型
+  const enemyN = 1 + Math.floor(rnd(200) * 2);
+  for(let i=0; i<enemyN; i++){
+    let ex, ez, tries=0;
+    do {
+      ex = (rnd(210+i)-0.5) * (w-3);
+      ez = (rnd(220+i)-0.5) * (d-3);
+      tries++;
+    } while(inStairWell(ex, ez) && tries < 8);
+    if(inStairWell(ex, ez)) continue;
+    const types = ['rifle','smg','shotgun','sniper'];
+    const etype = types[Math.floor(rnd(230+i)*types.length)];
+    state.pendingBuildingLoot.push({kind:'enemy', x: ox + ex, z: oz + ez, y: surfY, type: etype});
+  }
+  // 2-4 个金币堆
+  const goldN = 2 + Math.floor(rnd(240) * 3);
+  for(let i=0; i<goldN; i++){
+    let gx, gz, tries=0;
+    do {
+      gx = (rnd(250+i)-0.5) * (w-2);
+      gz = (rnd(260+i)-0.5) * (d-2);
+      tries++;
+    } while(inStairWell(gx, gz) && tries < 8);
+    if(inStairWell(gx, gz)) continue;
+    const amt = 5 + Math.floor(rnd(270+i) * 25);
+    state.pendingBuildingLoot.push({kind:'gold', x: ox + gx, z: oz + gz, y: surfY, amt});
+  }
+  // 1-2 罐食物
+  const foodN = 1 + Math.floor(rnd(280) * 2);
+  for(let i=0; i<foodN; i++){
+    let fx, fz, tries=0;
+    do {
+      fx = (rnd(290+i)-0.5) * (w-2);
+      fz = (rnd(300+i)-0.5) * (d-2);
+      tries++;
+    } while(inStairWell(fx, fz) && tries < 8);
+    if(inStairWell(fx, fz)) continue;
+    state.pendingBuildingLoot.push({kind:'food', x: ox + fx, z: oz + fz, y: surfY});
+  }
+}
+
+// 在敌方基地楼房 / 废墟附近补充金币/食物（不进 office decorate 流程的）
+function scatterBuildingLoot(){
+  state.pendingBuildingLoot = state.pendingBuildingLoot || [];
+  // 敌方基地 5 栋楼附近
+  const enemyBldgs = [[0,-150],[-22,-156],[22,-156],[-12,-170],[12,-170]];
+  for(const [bx, bz] of enemyBldgs){
+    for(let i=0; i<3; i++){
+      state.pendingBuildingLoot.push({
+        kind:'gold',
+        x: bx + (Math.random()-0.5)*4,
+        z: bz + (Math.random()-0.5)*4,
+        y: 0,
+        amt: 5 + Math.floor(Math.random()*30)
+      });
+    }
+    if(Math.random() < 0.7){
+      state.pendingBuildingLoot.push({
+        kind:'food',
+        x: bx + (Math.random()-0.5)*4,
+        z: bz + (Math.random()-0.5)*4,
+        y: 0,
+      });
+    }
+  }
+  // 散点金币（简单沿用 visProps 已存在的废墟坐标）
+  for(let i=0; i<24; i++){
+    const rx = (Math.random()-0.5) * state.MAP * 1.4;
+    const rz = (Math.random()-0.5) * state.MAP * 1.4;
+    if(Math.hypot(rx, rz - 200) < 50) continue;
+    if(Math.hypot(rx, rz + 150) < 30) continue;
+    state.pendingBuildingLoot.push({
+      kind:'gold', x: rx, z: rz, y: 0,
+      amt: 3 + Math.floor(Math.random()*15)
+    });
+  }
+}
+
+// 楼内战利品 + 守卫的延迟落实（在世界生成完成后再注册到 pickup / enemy 系统）
+function applyBuildingLoot(){
+  if(!state.pendingBuildingLoot) return;
+  for(const t of state.pendingBuildingLoot){
+    if(t.kind === 'enemy'){
+      // 重用 spawnEnemy，但要把 y 高度赋给 group
+      const before = state.enemies.length;
+      spawnEnemy(t.x, t.z, t.type);
+      const e = state.enemies[before];
+      if(e){
+        e.pos.y = t.y;
+        e.group.position.y = t.y;
+        e.placement = [t.x, t.z, t.type];
+      }
+    } else if(t.kind === 'gold'){
+      makePickup(t.x, t.z, 'gold', t.amt);
+      const last = state.pickups[state.pickups.length-1];
+      if(last) last.group.position.y = t.y + 0.7;
+    } else if(t.kind === 'food'){
+      makePickup(t.x, t.z, 'food');
+      const last = state.pickups[state.pickups.length-1];
+      if(last) last.group.position.y = t.y + 0.7;
+    }
+  }
+  state.pendingBuildingLoot.length = 0;
 }
 
 // ============================== [ANW BASE] =====================================
@@ -2443,10 +2549,23 @@ const VM_SPRINT=new THREE.Vector3(0.22,-0.22,-0.28);
 const _shadowGeo = new THREE.CircleGeometry(0.5, 12);
 const _shadowMat = new THREE.MeshBasicMaterial({color:0x000000, transparent:true, opacity:0.4, depthWrite:false});
 
+// 金币存档：每个角色 id 一笔余额，跨会话保留
+function loadGoldDB(){
+  try { return JSON.parse(localStorage.getItem('shadowContract_gold') || '{}'); }
+  catch(e){ return {}; }
+}
+function saveGold(){
+  if(!state.squad) return;
+  const db = {};
+  for(const s of state.squad) db[s.def.id] = s.gold || 0;
+  try { localStorage.setItem('shadowContract_gold', JSON.stringify(db)); } catch(e){}
+}
+
 function buildSquad(){
   state.viewmodel=new THREE.Group();
   state.camera.add(state.viewmodel);
   state.viewmodel.position.copy(VM_HIP);
+  const goldDB = loadGoldDB();
   SQUAD_DEF.forEach((d,i)=>{
     const ch=buildCharacter({...d.opts,enemy:false});
     ch.position.set(-7+i*2,0,100); state.scene.add(ch);
@@ -2463,6 +2582,7 @@ function buildSquad(){
       grenades:3, medkits:2, cd:0, dead:false,
       aiTimer:0, aiOffset:new THREE.Vector3((i-2)*2,0,3), aiLastShot:0, aiHealCd:0,
       inVehicle:null, damageFlash:0,
+      gold: goldDB[d.id] || 0,
     };
     for(const wn of sm.weapons) sm.wState[wn]={ammo:W[wn].mag,reserve:W[wn].reserveMax};
     state.squad.push(sm);
@@ -2746,6 +2866,15 @@ function pickupItem(p){
   } else if(p.type==='ammo'){
     for(const wn of a.weapons){const w=W[wn], s=a.wState[wn]; s.reserve=Math.min(w.reserveMax,s.reserve+w.mag*2);}
     a.grenades=Math.min(5,a.grenades+1); log('+ 弹药','#ffb347');
+  } else if(p.type==='gold'){
+    const amt = p.subtype || (5 + Math.floor(Math.random()*15));
+    a.gold = (a.gold||0) + amt;
+    saveGold();
+    log('+ '+amt+' 金币（共 '+a.gold+'）','#ffd24a');
+  } else if(p.type==='food'){
+    a.stamina = Math.min(100, (a.stamina||0) + 50);
+    a.hp = Math.min(a.maxHp, a.hp + 15);
+    log('+ 罐头：体力+50 / HP+15','#88ccff');
   } else if(p.type==='weapon'){
     const newType = W[p.subtype].type;
     const slot = newType === 'pistol' ? 1 : 0;
@@ -2940,7 +3069,11 @@ function fireRay(o,dir,dmg,range,source){
     if(hE.hp<=0){
       hE.group.rotation.z=Math.PI/2; hE.group.position.y-=0.2;
       for(const o2 of state.enemies) if(o2.hp>0&&o2.pos.distanceTo(hE.pos)<25){o2.state='aggro';o2.target=state.active?.pos;}
-      if(source==='player') log(head?'爆头击杀！':'击杀','#ffb347');
+      if(source==='player'){
+        const reward = head ? (10 + Math.floor(Math.random()*15)) : (4 + Math.floor(Math.random()*8));
+        if(state.active){ state.active.gold = (state.active.gold||0) + reward; saveGold(); }
+        log((head?'爆头击杀！':'击杀')+' +'+reward+' 金币','#ffb347');
+      }
     }
     return;
   }
@@ -3676,6 +3809,7 @@ function updateInvUI(){
   document.getElementById('iv-vest').textContent=a.armor>0?(a.armorTier==='heavy'?'重':'轻')+' '+Math.ceil(a.armor):'无';
   document.getElementById('iv-grenade').textContent=a.grenades;
   document.getElementById('iv-medkit').textContent=a.medkits;
+  const gold=document.getElementById('iv-gold'); if(gold) gold.textContent=a.gold||0;
 }
 function updateStanceUI(){
   const a=state.active; if(!a) return;
@@ -4311,7 +4445,11 @@ async function progressiveLoad(){
   buildEnemies(); fill.style.width='82%';
   await frame();
   text.textContent='布置载具与拾取...';
-  buildVehicles(); buildPickups(); fill.style.width='92%';
+  buildVehicles(); buildPickups();
+  // 楼房内随机分配的敌人/金币/食物
+  scatterBuildingLoot();
+  applyBuildingLoot();
+  fill.style.width='92%';
   await frame();
   text.textContent='初始化输入...';
   initInput(); fill.style.width='95%';
