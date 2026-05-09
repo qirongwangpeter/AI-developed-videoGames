@@ -11,4 +11,4 @@ here is the preview of what we currently have:
 <img width="2521" height="1381" alt="屏幕截图 2026-05-09 151758" src="https://github.com/user-attachments/assets/85eeab6e-dcd6-474b-a4ac-6d7d7e5f22a1" />
 <img width="2526" height="1388" alt="屏幕截图 2026-05-09 151710" src="https://github.com/user-attachments/assets/bc1d64db-dae8-4810-8dea-29d621766049" />
 <img width="1270" height="694" alt="屏幕截图 2026-05-09 151443" src="https://github.com/user-attachments/assets/87b0c12f-64b0-4e14-801b-99672676cb7f" />
-<img width="1270" height="694" alt="image" src="https://github.com/user-attachments/assets/4f53ca06-4494-45ba-a83b-18c320138512" />
+still working on debugging...
