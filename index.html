@@ -146,6 +146,19 @@ canvas{display:block}
     </div>
     <div id="mp-status" style="margin-top:8px;font-size:11px;color:#888;text-align:center">单机模式 · 也可仅本机游玩</div>
   </div>
+  <div id="save-panel" style="margin-top:12px;background:rgba(10,15,20,.6);border:1px solid #3a4a55;padding:10px 18px;max-width:560px">
+    <div style="color:#ffd24a;letter-spacing:3px;font-size:12px;text-align:center;margin-bottom:6px">▍ 金币存档（跨设备）</div>
+    <div style="font-size:10px;color:#888;text-align:center;margin-bottom:8px">
+      金币默认只保存在本机浏览器。换电脑请用 <b>导出</b> 把字符串发给自己，在另一台机器上 <b>导入</b>。
+    </div>
+    <div style="display:flex;gap:10px;justify-content:center;align-items:center;flex-wrap:wrap;font-size:12px">
+      <button id="save-export-btn" style="padding:6px 14px;background:transparent;color:#ffd24a;border:1px solid #ffd24a;cursor:pointer;font-family:inherit">导出存档</button>
+      <input id="save-import-id" placeholder="粘贴存档字符串" style="background:#111;color:#fff;border:1px solid #555;padding:5px 8px;width:200px;font-family:inherit">
+      <button id="save-import-btn" style="padding:6px 14px;background:transparent;color:#5acc6a;border:1px solid #5acc6a;cursor:pointer;font-family:inherit">导入存档</button>
+      <button id="save-clear-btn" style="padding:6px 14px;background:transparent;color:#888;border:1px solid #555;cursor:pointer;font-family:inherit">清空</button>
+    </div>
+    <div id="save-status" style="margin-top:6px;font-size:11px;color:#888;text-align:center"></div>
+  </div>
   <div id="controls">
     <kbd>WASD</kbd> 移动 &nbsp; <kbd>Shift</kbd> 冲刺 &nbsp; <kbd>Ctrl</kbd> 蹲下 &nbsp; <kbd>Space</kbd> 跳跃<br>
     <kbd>左键</kbd> 射击 &nbsp; <kbd>右键</kbd> 开镜 &nbsp; <kbd>R</kbd> 换弹 &nbsp; <kbd>Tab</kbd> 切武器<br>
@@ -4718,36 +4731,92 @@ function mpSetButtonsConnected(connected){
   document.getElementById('mp-join-btn').style.display = connected ? 'none' : '';
   document.getElementById('mp-leave-btn').style.display = connected ? '' : 'none';
 }
+// PeerJS 配置：开启详细日志 + 多个公网 ICE 服务器（含免费 TURN 中继，
+// 否则同时身处对称 NAT / 公司防火墙的两端 WebRTC 直连一定会失败）
+const PEER_CONFIG = {
+  debug: 2,
+  config: {
+    iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+      { urls: 'stun:global.stun.twilio.com:3478' },
+      // Open Relay Project 提供的公共 TURN（用 80 / 443 / 443-TCP 三种端口，绕开常见防火墙）
+      { urls: 'turn:openrelay.metered.ca:80',                      username: 'openrelayproject', credential: 'openrelayproject' },
+      { urls: 'turn:openrelay.metered.ca:443',                     username: 'openrelayproject', credential: 'openrelayproject' },
+      { urls: 'turn:openrelay.metered.ca:443?transport=tcp',       username: 'openrelayproject', credential: 'openrelayproject' },
+    ]
+  }
+};
+const CONNECT_TIMEOUT_MS = 25000;
+
+function mpFile() {
+  return location.protocol === 'file:';
+}
 function mpInit(){
   document.getElementById('mp-host-btn').addEventListener('click', ()=>{
     if(typeof Peer === 'undefined'){ mpSetStatus('PeerJS 未加载（需联网）','#c8302a'); return; }
-    mpSetStatus('正在创建房间...','#aaa');
-    const peer = new Peer(undefined, {debug:0});
+    if(mpFile()) mpSetStatus('提示：file:// 下信令稳定性较差，建议用 python -m http.server','#cc8a3a');
+    else         mpSetStatus('正在创建房间...','#aaa');
+    let peer;
+    try { peer = new Peer(undefined, PEER_CONFIG); }
+    catch(err){ mpSetStatus('PeerJS 初始化失败：'+err.message, '#c8302a'); return; }
     net.peer = peer; net.role = 'host';
+    const openTimer = setTimeout(()=>{
+      if(!net.myId){ mpSetStatus('信令超时（25s）— 检查网络/代理是否阻断 wss', '#c8302a'); }
+    }, CONNECT_TIMEOUT_MS);
     peer.on('open', id => {
+      clearTimeout(openTimer);
       net.myId = id; net.enabled = true;
-      mpSetStatus('房间ID（分享给好友）: '+id+'   ‹双击复制›','#5acc6a');
+      mpSetStatus('房间ID: '+id+'   (双击复制 · 把这串字符发给好友)','#5acc6a');
       const st = document.getElementById('mp-status');
       st.style.cursor = 'pointer';
       st.ondblclick = ()=>{ navigator.clipboard && navigator.clipboard.writeText(id); st.textContent = '已复制 '+id; };
       mpSetButtonsConnected(true);
     });
     peer.on('connection', conn => mpAttachConn(conn));
-    peer.on('error', e => mpSetStatus('错误：'+e.type, '#c8302a'));
+    peer.on('disconnected', ()=> mpSetStatus('与信令断开，正在重连...','#cc8a3a'));
+    peer.on('error', e => {
+      console.error('[mp host] peer error', e);
+      mpSetStatus('错误('+e.type+'): '+(e.message||'未知')+'  控制台 F12 看详情', '#c8302a');
+    });
   });
   document.getElementById('mp-join-btn').addEventListener('click', ()=>{
     if(typeof Peer === 'undefined'){ mpSetStatus('PeerJS 未加载（需联网）','#c8302a'); return; }
     const hostId = document.getElementById('mp-join-id').value.trim();
     if(!hostId){ mpSetStatus('请输入房间ID','#c8302a'); return; }
-    mpSetStatus('正在连接 '+hostId+'...', '#aaa');
-    const peer = new Peer(undefined, {debug:0});
+    mpSetStatus('正在登记信令...', '#aaa');
+    let peer;
+    try { peer = new Peer(undefined, PEER_CONFIG); }
+    catch(err){ mpSetStatus('PeerJS 初始化失败：'+err.message, '#c8302a'); return; }
     net.peer = peer; net.role = 'client';
+    let connectTimer = null;
+    const openTimer = setTimeout(()=>{
+      if(!net.myId){ mpSetStatus('信令超时（25s）— 检查网络 / 关闭代理 / 用手机热点', '#c8302a'); }
+    }, CONNECT_TIMEOUT_MS);
     peer.on('open', id => {
+      clearTimeout(openTimer);
       net.myId = id;
-      const conn = peer.connect(hostId, {reliable: false});
+      mpSetStatus('已登记自己（'+id.slice(0,6)+'...），正在连接房主...', '#aaa');
+      // reliable 用于握手；之后我们高频发送的位置数据可以走 unordered/unreliable，但 PeerJS 一旦 open 之后是同一通道
+      const conn = peer.connect(hostId, {reliable: true, serialization: 'json'});
       mpAttachConn(conn);
+      connectTimer = setTimeout(()=>{
+        if(!conn.open){
+          mpSetStatus('25s 没握手成功 — 房主在线？房间ID 对吗？两边都在内网时可能需要切手机热点', '#c8302a');
+          try { conn.close(); } catch(e){}
+        }
+      }, CONNECT_TIMEOUT_MS);
+      conn.on('open', ()=>{ if(connectTimer) clearTimeout(connectTimer); });
     });
-    peer.on('error', e => mpSetStatus('错误：'+e.type, '#c8302a'));
+    peer.on('disconnected', ()=> mpSetStatus('与信令断开，正在重连...','#cc8a3a'));
+    peer.on('error', e => {
+      console.error('[mp client] peer error', e);
+      let hint = '';
+      if(e.type === 'peer-unavailable') hint = ' (房间ID不存在或房主已离线)';
+      else if(e.type === 'network')      hint = ' (网络问题 — 检查代理/防火墙)';
+      else if(e.type === 'server-error') hint = ' (PeerJS 公共信令服务器异常 — 稍后重试)';
+      mpSetStatus('错误('+e.type+')'+hint+'  F12 看详情', '#c8302a');
+    });
   });
   document.getElementById('mp-leave-btn').addEventListener('click', mpLeave);
 }
@@ -4755,8 +4824,9 @@ function mpAttachConn(conn){
   conn.on('open', ()=>{
     net.conns.push(conn);
     net.enabled = true;
-    mpSetStatus('已连接 · 在线 '+(net.conns.length+1)+' 人', '#5acc6a');
+    mpSetStatus('✓ 已连接 · 在线 '+(net.conns.length+1)+' 人', '#5acc6a');
     mpSetButtonsConnected(true);
+    console.log('[mp] connection opened with', conn.peer);
   });
   conn.on('data', d => mpOnData(conn, d));
   conn.on('close', ()=>{
@@ -4767,7 +4837,10 @@ function mpAttachConn(conn){
     }
     mpSetStatus(net.conns.length ? '在线 '+(net.conns.length+1)+' 人' : '对方已断开','#aaa');
   });
-  conn.on('error', e => console.warn('mp conn err', e));
+  conn.on('error', e => {
+    console.error('[mp] conn error', e);
+    mpSetStatus('连接错误：'+(e.type||e.message||e), '#c8302a');
+  });
 }
 function mpLeave(){
   net.conns.forEach(c => { try{c.close();}catch(e){} });
@@ -4830,8 +4903,48 @@ function mpBroadcastFire(){
   }
 }
 
+// 跨设备金币存档：导出/导入字符串（Base64 编码的 JSON）
+function bindSaveButtons(){
+  const ss = (msg, color)=>{
+    const el = document.getElementById('save-status');
+    if(el){ el.textContent = msg; el.style.color = color || '#888'; }
+  };
+  document.getElementById('save-export-btn').addEventListener('click', ()=>{
+    const db = loadGoldDB();
+    // 加 "SC1:" 前缀方便识别版本
+    const code = 'SC1:' + btoa(unescape(encodeURIComponent(JSON.stringify(db))));
+    try { navigator.clipboard && navigator.clipboard.writeText(code); } catch(e){}
+    document.getElementById('save-import-id').value = code;
+    ss('已复制到剪贴板：'+code, '#ffd24a');
+  });
+  document.getElementById('save-import-btn').addEventListener('click', ()=>{
+    const raw = document.getElementById('save-import-id').value.trim();
+    if(!raw){ ss('请粘贴存档字符串', '#c8302a'); return; }
+    if(!raw.startsWith('SC1:')){ ss('格式不对：存档必须以 SC1: 开头', '#c8302a'); return; }
+    try {
+      const json = decodeURIComponent(escape(atob(raw.slice(4))));
+      const db = JSON.parse(json);
+      if(typeof db !== 'object' || db === null) throw new Error('解析后不是对象');
+      localStorage.setItem('shadowContract_gold', JSON.stringify(db));
+      // 立即应用到当前 squad（如果已生成）
+      if(state.squad){
+        for(const s of state.squad){ s.gold = db[s.def.id] || 0; }
+      }
+      const total = Object.values(db).reduce((a,b)=>a+(+b||0),0);
+      ss('✓ 导入成功 · 共 '+total+' 金币（'+Object.keys(db).length+' 个角色）', '#5acc6a');
+    } catch(err){ ss('导入失败：'+err.message, '#c8302a'); }
+  });
+  document.getElementById('save-clear-btn').addEventListener('click', ()=>{
+    if(!confirm('确定清空所有金币存档？此操作不可撤销。')) return;
+    localStorage.removeItem('shadowContract_gold');
+    if(state.squad){ for(const s of state.squad) s.gold = 0; }
+    ss('已清空本机金币存档', '#888');
+  });
+}
+
 function bindButtons(){
   mpInit();
+  bindSaveButtons();
   document.getElementById('start-btn').addEventListener('click',()=>{
     document.getElementById('menu').style.display='none';
     document.getElementById('ui').style.display='block';
