@@ -150,10 +150,27 @@ canvas{display:block}
     </div>
     <div id="mp-status" style="margin-top:8px;font-size:11px;color:#888;text-align:center">单机模式 · 也可仅本机游玩</div>
   </div>
-  <div id="save-panel" style="margin-top:12px;background:rgba(10,15,20,.6);border:1px solid #3a4a55;padding:10px 18px;max-width:560px">
-    <div style="color:#ffd24a;letter-spacing:3px;font-size:12px;text-align:center;margin-bottom:6px">▍ 金币存档（跨设备）</div>
-    <div style="font-size:10px;color:#888;text-align:center;margin-bottom:8px">
-      金币默认只保存在本机浏览器。换电脑请用 <b>导出</b> 把字符串发给自己，在另一台机器上 <b>导入</b>。
+  <div id="save-panel" style="margin-top:12px;background:rgba(10,15,20,.6);border:1px solid #3a4a55;padding:10px 18px;max-width:620px">
+    <div style="color:#ffd24a;letter-spacing:3px;font-size:12px;text-align:center;margin-bottom:6px">▍ 金币存档</div>
+
+    <!-- 云存档（推荐路径） -->
+    <div style="background:rgba(255,210,74,.06);border:1px dashed #ffd24a;padding:8px 12px;margin-bottom:10px;border-radius:3px">
+      <div style="font-size:11px;color:#ffd24a;margin-bottom:6px">☁ 云存档（推荐 · 真跨设备）</div>
+      <div style="font-size:10px;color:#888;margin-bottom:6px">
+        部署一个免费的 Cloudflare Worker，5 分钟搞定。说明：仓库 <code>worker/DEPLOY.md</code>。
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 100px auto auto;gap:6px;font-size:11px;align-items:center">
+        <input id="cloud-url"  placeholder="Worker URL (https://...workers.dev)" style="background:#111;color:#fff;border:1px solid #555;padding:5px 8px;font-family:inherit;grid-column:span 2">
+        <input id="cloud-user" placeholder="用户名" maxlength="32" style="background:#111;color:#fff;border:1px solid #555;padding:5px 8px;font-family:inherit">
+        <input id="cloud-pin"  placeholder="PIN(4-12数字)" maxlength="12" style="background:#111;color:#fff;border:1px solid #555;padding:5px 8px;width:110px;font-family:inherit">
+        <button id="cloud-enable-btn" style="padding:5px 12px;background:transparent;color:#5acc6a;border:1px solid #5acc6a;cursor:pointer;font-family:inherit">启用云存档</button>
+      </div>
+      <div id="cloud-status" style="margin-top:6px;font-size:11px;color:#888">未启用</div>
+    </div>
+
+    <!-- 本地导出/导入（应急 / 不想用云的时候） -->
+    <div style="font-size:10px;color:#888;text-align:center;margin-bottom:6px">
+      或者：手动导出存档字符串发给自己，在另一台机器上导入。
     </div>
     <div style="display:flex;gap:10px;justify-content:center;align-items:center;flex-wrap:wrap;font-size:12px">
       <button id="save-export-btn" style="padding:6px 14px;background:transparent;color:#ffd24a;border:1px solid #ffd24a;cursor:pointer;font-family:inherit">导出存档</button>
@@ -2681,6 +2698,132 @@ function saveGold(){
   const db = {};
   for(const s of state.squad) db[s.def.id] = s.gold || 0;
   try { localStorage.setItem('shadowContract_gold', JSON.stringify(db)); } catch(e){}
+  // 触发云端推送（带 debounce 防抖）
+  cloudSchedulePush();
+}
+
+// ============================== [CLOUD SAVE (Cloudflare Worker)] ===============
+// 配置存在 localStorage。启用后：
+//   - 开局前从云端拉取并合并（云端胜出）到本地
+//   - saveGold 时 debounce 2 秒后推送到云端
+const cloud = {
+  url: localStorage.getItem('cloudUrl') || '',
+  user: localStorage.getItem('cloudUser') || '',
+  pin: localStorage.getItem('cloudPin') || '',
+  enabled: localStorage.getItem('cloudEnabled') === '1',
+  lastSync: 0,
+  pushTimer: null,
+  pushing: false,
+};
+function cloudReady(){
+  return cloud.enabled && cloud.url && cloud.user && cloud.pin;
+}
+function cloudStatusEl(){
+  return document.getElementById('cloud-status');
+}
+function cloudSetStatus(msg, color){
+  const el = cloudStatusEl();
+  if(el){ el.textContent = msg; el.style.color = color || '#888'; }
+}
+async function cloudLoad(){
+  if(!cloudReady()) return null;
+  try {
+    const u = cloud.url.replace(/\/+$/, '') + '/load?user=' + encodeURIComponent(cloud.user) + '&pin=' + encodeURIComponent(cloud.pin);
+    const r = await fetch(u);
+    const j = await r.json().catch(()=>({error:'非 JSON 响应'}));
+    if(!r.ok) throw new Error(j.error || ('HTTP '+r.status));
+    cloud.lastSync = Date.now();
+    return j.db || {};
+  } catch(e){
+    console.warn('[cloud] load failed', e);
+    cloudSetStatus('☁ 拉取失败：'+e.message, '#c8302a');
+    return null;
+  }
+}
+async function cloudSave(db){
+  if(!cloudReady() || cloud.pushing) return false;
+  cloud.pushing = true;
+  try {
+    const r = await fetch(cloud.url.replace(/\/+$/, '') + '/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user: cloud.user, pin: cloud.pin, db }),
+    });
+    const j = await r.json().catch(()=>({error:'非 JSON 响应'}));
+    if(!r.ok) throw new Error(j.error || ('HTTP '+r.status));
+    cloud.lastSync = Date.now();
+    cloudSetStatus('☁ 已启用 · 刚刚同步', '#5acc6a');
+    return true;
+  } catch(e){
+    console.warn('[cloud] save failed', e);
+    cloudSetStatus('☁ 推送失败：'+e.message, '#c8302a');
+    return false;
+  } finally {
+    cloud.pushing = false;
+  }
+}
+function cloudSchedulePush(){
+  if(!cloudReady()) return;
+  if(cloud.pushTimer) clearTimeout(cloud.pushTimer);
+  cloud.pushTimer = setTimeout(()=>{
+    cloud.pushTimer = null;
+    cloudSave(loadGoldDB());
+  }, 2000);
+}
+function bindCloudButtons(){
+  // 把 localStorage 里保存的配置填回 input
+  const urlIn = document.getElementById('cloud-url');
+  const userIn = document.getElementById('cloud-user');
+  const pinIn = document.getElementById('cloud-pin');
+  if(urlIn) urlIn.value = cloud.url;
+  if(userIn) userIn.value = cloud.user;
+  if(pinIn) pinIn.value = cloud.pin;
+  if(cloud.enabled){
+    cloudSetStatus('☁ 已启用 · 等待同步...', '#5acc6a');
+  }
+  const btn = document.getElementById('cloud-enable-btn');
+  if(!btn) return;
+  btn.addEventListener('click', async ()=>{
+    const url = urlIn.value.trim();
+    const user = userIn.value.trim();
+    const pin = pinIn.value.trim();
+    if(!url || !user || !pin){
+      cloudSetStatus('请把 URL、用户名、PIN 都填上', '#c8302a'); return;
+    }
+    if(!/^https?:\/\//.test(url)){
+      cloudSetStatus('URL 必须以 http(s):// 开头', '#c8302a'); return;
+    }
+    if(!/^[A-Za-z0-9_\-]{2,32}$/.test(user)){
+      cloudSetStatus('用户名必须 2-32 位字母/数字/-/_', '#c8302a'); return;
+    }
+    if(!/^[0-9]{4,12}$/.test(pin)){
+      cloudSetStatus('PIN 必须 4-12 位数字', '#c8302a'); return;
+    }
+    cloud.url = url; cloud.user = user; cloud.pin = pin; cloud.enabled = true;
+    localStorage.setItem('cloudUrl', url);
+    localStorage.setItem('cloudUser', user);
+    localStorage.setItem('cloudPin', pin);
+    localStorage.setItem('cloudEnabled', '1');
+    cloudSetStatus('☁ 正在测试连接...', '#aaa');
+    // 拉一次远端
+    const remoteDB = await cloudLoad();
+    if(remoteDB === null){ return; } // 状态已显示
+    // 合并：远端 > 本地。然后写回本地 + squad
+    const localDB = loadGoldDB();
+    const merged = { ...localDB };
+    let any = false;
+    for(const k in remoteDB){
+      if(merged[k] !== remoteDB[k]){ merged[k] = remoteDB[k]; any = true; }
+    }
+    localStorage.setItem('shadowContract_gold', JSON.stringify(merged));
+    if(state.squad){
+      for(const s of state.squad) s.gold = merged[s.def.id] || 0;
+    }
+    // 同步本地新数据到云
+    await cloudSave(merged);
+    const total = Object.values(merged).reduce((a,b)=>a+(+b||0),0);
+    cloudSetStatus('☁ 已启用 · 共 '+total+' 金币（'+Object.keys(merged).length+' 角色） · 已同步', '#5acc6a');
+  });
 }
 
 function buildSquad(){
@@ -4650,6 +4793,16 @@ async function progressiveLoad(){
     fill.style.width=(12+(i+1)/steps.length*50)+'%';
     if(i%4===0) await frame();
   }
+  // 云存档预加载：把远端金币合并到本地，buildSquad 会读到最新数据
+  if(cloudReady()){
+    text.textContent='拉取云存档...';
+    const remoteDB = await cloudLoad();
+    if(remoteDB){
+      const localDB = loadGoldDB();
+      const merged = { ...localDB, ...remoteDB }; // 远端胜出
+      try { localStorage.setItem('shadowContract_gold', JSON.stringify(merged)); } catch(e){}
+    }
+  }
   text.textContent='生成小队...';
   buildSquad(); fill.style.width='70%';
   await frame();
@@ -5353,6 +5506,7 @@ function bindSaveButtons(){
 function bindButtons(){
   mpInit();
   bindSaveButtons();
+  bindCloudButtons();
   document.getElementById('start-btn').addEventListener('click',()=>{
     document.getElementById('menu').style.display='none';
     document.getElementById('ui').style.display='block';
