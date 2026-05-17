@@ -137,7 +137,11 @@ canvas{display:block}
   </div>
   <button id="start-btn">开始任务</button>
   <div id="mp-panel" style="margin-top:18px;background:rgba(10,15,20,.6);border:1px solid #3a4a55;padding:12px 18px;max-width:560px">
-    <div style="color:#ffb347;letter-spacing:3px;font-size:12px;text-align:center;margin-bottom:8px">▍ 联机模式（实验）</div>
+    <div style="color:#ffb347;letter-spacing:3px;font-size:12px;text-align:center;margin-bottom:8px">▍ 联机模式（合作 · 最多 8 人）</div>
+    <div style="font-size:10px;color:#888;text-align:center;margin-bottom:8px">
+      房主=普莱斯；加入者按顺序获得幽灵 / 肥皂 / 王启融 ... 等不同角色。<br>
+      房主是权威：敌人状态由房主算并同步给所有人；金币/击杀/拾取共享。
+    </div>
     <div style="display:flex;gap:10px;justify-content:center;align-items:center;flex-wrap:wrap;font-size:12px">
       <button id="mp-host-btn" style="padding:6px 14px;background:transparent;color:#5acc6a;border:1px solid #5acc6a;cursor:pointer;font-family:inherit">创建房间</button>
       <input id="mp-join-id" placeholder="房间ID" style="background:#111;color:#fff;border:1px solid #555;padding:5px 8px;width:140px;font-family:inherit">
@@ -162,7 +166,7 @@ canvas{display:block}
   <div id="controls">
     <kbd>WASD</kbd> 移动 &nbsp; <kbd>Shift</kbd> 冲刺 &nbsp; <kbd>Ctrl</kbd> 蹲下 &nbsp; <kbd>Space</kbd> 跳跃<br>
     <kbd>左键</kbd> 射击 &nbsp; <kbd>右键</kbd> 开镜 &nbsp; <kbd>R</kbd> 换弹 &nbsp; <kbd>Tab</kbd> 切武器<br>
-    <kbd>F</kbd> 拾取/上下载具 &nbsp; <kbd>V</kbd> 技能 &nbsp; <kbd>1-8</kbd> 切换队员 &nbsp; <kbd>G</kbd> 手雷 &nbsp; <kbd>H</kbd> 医疗包
+    <kbd>F</kbd> 拾取/上下载具 &nbsp; <kbd>V</kbd> 技能 &nbsp; <kbd>1-8</kbd> 切换队员 &nbsp; <kbd>G</kbd> 手雷 &nbsp; <kbd>H</kbd> 医疗包 &nbsp; <kbd>T</kbd> 队友聊天
   </div>
 </div>
 <div id="ui" style="display:none">
@@ -210,6 +214,7 @@ canvas{display:block}
   </div>
 </div>
 <div id="damage-vignette"></div>
+<input id="chat-input" maxlength="120" placeholder="对队友说... (Enter 发送 / Esc 取消)" style="display:none;position:fixed;bottom:140px;left:14px;width:420px;background:rgba(10,15,20,.85);color:#fff;border:1px solid #5a8acc;padding:7px 12px;font-family:'Microsoft YaHei',sans-serif;font-size:13px;outline:none;z-index:50;border-radius:3px">
 <div id="board-ui" style="display:none">
   <div class="board-panel">
     <h3>作战部署板 — DEPLOYMENT BOARD</h3>
@@ -2738,6 +2743,11 @@ function unstuckSquadMember(sm){
 
 function setActive(i){
   if(i<0||i>=state.squad.length||state.squad[i].dead) return;
+  // 联机：客户端被锁定到分配的槽位
+  if(net.enabled && net.mySlot >= 0 && i !== net.mySlot){
+    log('联机模式：你只能控制 '+(SQUAD_DEF[net.mySlot]||{name:''}).name, '#cc8a3a');
+    return;
+  }
   state.activeIdx=i; state.active=state.squad[i];
   // 切换到留守队员 → 自动转为出征
   if(state.active.atBase){
@@ -2747,7 +2757,11 @@ function setActive(i){
   // 防止 AI 留下来的位置 / 姿态把新主控卡在墙内或地下
   unstuckSquadMember(state.active);
   state.active.onGround = true; state.active.vy = 0;
-  state.squad.forEach((s,j)=>{ s.group.visible=(j!==i||!!s.inVehicle); });
+  // 远端玩家的角色保持可见；本机非主控的角色隐藏
+  state.squad.forEach((s,j)=>{
+    if(s.remotePlayer) s.group.visible = !s.dead;
+    else                s.group.visible = (j!==i||!!s.inVehicle);
+  });
   rebuildViewmodel();
   state.viewmodel.visible=!state.active.inVehicle;
   updateSquadUI();
@@ -2808,6 +2822,8 @@ function updateEnemyActiveStatus(){
   }
 }
 function updateEnemies(dt){
+  // 联机客户端不跑敌人 AI — host 是权威方，通过 world 快照同步位置
+  if(net.enabled && net.role === 'client') return;
   const a=state.active; if(!a) return;
   const now=performance.now();
   for(let i=0;i<state.enemies.length;i++){
@@ -3192,6 +3208,12 @@ function fireRay(o,dir,dmg,range,source){
   if(hE){
     let d=dmg; const head=(o.y+dir.y*hd)>hE.pos.y+1.85;
     if(head) d*=2.5;
+    // 联机客户端：不本地扣血，转给 host 处理（防止双方各自扣血翻倍）
+    if(net.enabled && net.role === 'client' && source === 'player'){
+      mpRequestDamageEnemy(state.enemies.indexOf(hE), d, head);
+      hitMarker(head);
+      return;
+    }
     if(head&&hE.helmetArmor>0){
       const red=hE.type==='heavy'?0.7:0.5;
       const ab=Math.min(hE.helmetArmor,d*red); hE.helmetArmor-=ab; d-=ab;
@@ -3214,6 +3236,10 @@ function fireRay(o,dir,dmg,range,source){
         const reward = head ? (10 + Math.floor(Math.random()*15)) : (4 + Math.floor(Math.random()*8));
         if(state.active){ state.active.gold = (state.active.gold||0) + reward; saveGold(); }
         log((head?'爆头击杀！':'击杀')+' +'+reward+' 金币','#ffb347');
+        // 联机 host：把击杀事件广播给所有 client（让他们同步金币 + 日志）
+        if(net.enabled && net.role === 'host'){
+          mpSendToAll({t:'kill', i:state.enemies.indexOf(hE), s:net.mySlot, r:reward, h:head});
+        }
       }
     }
     return;
@@ -3321,7 +3347,12 @@ function shootActive(){
   const now=performance.now();
   if(now-a.lastShot<w.fireRate) return;
   a.lastShot=now; s.ammo--; muzzleFlash();
-  if(typeof mpBroadcastFire === 'function') mpBroadcastFire();
+  // 联机：把这一发的起点+方向+射程广播给其他玩家，让他们看到 tracer / 枪口光
+  if(typeof mpBroadcastFire === 'function' && net.enabled){
+    state.camera.getWorldPosition(_shootO);
+    state.camera.getWorldDirection(_shootD);
+    mpBroadcastFire(_shootO, _shootD, w.range || 60);
+  }
   // OPT: 用全局 scratch 而不是每次 new Vector3
   state.camera.getWorldPosition(_shootO);
   state.camera.getWorldDirection(_shootD);
@@ -3411,6 +3442,8 @@ function updateProjectiles(dt){
 // ============================== [AI] ========================================
 function updateAIMate(sm,dt){
   if(sm.dead||sm===state.active||sm.inVehicle) return;
+  // 联机：远端玩家控制的槽位不要跑 AI（位置/朝向通过网络消息直接设置）
+  if(sm.remotePlayer) return;
   // 基地防守人员
   if(sm.atBase){
     // MG 操作员：固定在 MG 旁，前倾架枪姿势
@@ -3698,9 +3731,39 @@ function useSkill(){
 
 // ============================== [INPUT] =====================================
 function initInput(){
+  // 聊天输入框（仅联机模式）
+  const chatIn = document.getElementById('chat-input');
+  if(chatIn){
+    chatIn.addEventListener('keydown', ev=>{
+      ev.stopPropagation();
+      if(ev.code === 'Enter'){
+        ev.preventDefault();
+        const txt = chatIn.value.trim();
+        if(txt) mpChat(txt);
+        chatIn.value = ''; chatIn.style.display = 'none';
+        if(state.renderer && state.renderer.domElement.requestPointerLock){
+          state.renderer.domElement.requestPointerLock();
+        }
+      } else if(ev.code === 'Escape'){
+        ev.preventDefault();
+        chatIn.value = ''; chatIn.style.display = 'none';
+        if(state.renderer && state.renderer.domElement.requestPointerLock){
+          state.renderer.domElement.requestPointerLock();
+        }
+      }
+    });
+  }
   addEventListener('keydown',e=>{
     state.keys[e.code]=true;
     if(!state.gameStarted) return;
+    // 聊天热键 T（仅联机）— 在输入框中时不重复触发
+    if(e.code==='KeyT' && net.enabled && chatIn && chatIn.style.display === 'none' && document.activeElement !== chatIn){
+      e.preventDefault();
+      document.exitPointerLock && document.exitPointerLock();
+      chatIn.style.display = 'block';
+      setTimeout(()=>chatIn.focus(), 50);
+      return;
+    }
     if(e.code==='KeyR') tryReload();
     if(e.code==='KeyF') interact();
     if(e.code==='Tab'){e.preventDefault(); cycleWeapon();}
@@ -3801,6 +3864,11 @@ function interact(){
   for(let i=state.pickups.length-1;i>=0;i--){
     const p=state.pickups[i];
     if(a.pos.distanceTo(p.group.position)<2.2){
+      // 联机：先向 host 申请；如果已被别人捡走则拒绝
+      if(net.enabled && !mpRequestPickup(i)){
+        log('已被队友捡走','#888');
+        return;
+      }
       pickupItem(p); state.scene.remove(p.group); state.pickups.splice(i,1); return;
     }
   }
@@ -4711,15 +4779,23 @@ function renderBoardUI(){
 }
 
 // ============================== [MULTIPLAYER (PeerJS)] ==========================
+// 架构：星型拓扑 — host 是权威服务器。所有 client↔client 消息通过 host 中转。
+// 每个玩家拥有一个 squad 槽位（0..7）。Host 永远是 slot 0。新加入的 client
+// 获得下一个空闲槽位。被人类玩家占用的槽位会从 AI 控制中移除。
+// 敌人状态由 host 权威模拟，按 8Hz 快照广播给所有 client。
 const net = {
   enabled: false,
-  role: null,         // 'host' | 'client'
+  role: null,                  // 'host' | 'client' | null
   peer: null,
-  conns: [],
-  remotes: {},        // peerId -> { mesh, last:{x,y,z,yaw} }
-  sendAcc: 0,
-  sendInterval: 1/12, // 12 Hz
+  conns: [],                   // host: 所有 client 连接；client: 只含 host 连接
+  hostConn: null,              // client 才用
   myId: null,
+  mySlot: -1,                  // 0 = host；1+ = client
+  peerSlot: {},                // host 用：peer.id → slot
+  takenPickups: new Set(),     // 已被拾取的 pickup index（按 state.pickups 索引）
+  plAcc: 0, worldAcc: 0,
+  PL_RATE: 1/12,               // 玩家状态 12Hz
+  WORLD_RATE: 1/8,             // 世界快照 8Hz
 };
 function mpSetStatus(msg, color){
   const el = document.getElementById('mp-status');
@@ -4752,155 +4828,487 @@ const CONNECT_TIMEOUT_MS = 25000;
 function mpFile() {
   return location.protocol === 'file:';
 }
+function mpSendToAll(payload, except){
+  for(const c of net.conns){
+    if(c === except) continue;
+    try { c.send(payload); } catch(e){}
+  }
+}
+function mpSendToHost(payload){
+  if(net.role === 'client' && net.hostConn && net.hostConn.open){
+    try { net.hostConn.send(payload); } catch(e){}
+  }
+}
+function mpFindFreeSlot(){
+  if(!state.squad || state.squad.length === 0) return -1;
+  const used = new Set([0, ...Object.values(net.peerSlot)]);
+  for(let i = 1; i < state.squad.length; i++){
+    if(!used.has(i)) return i;
+  }
+  return -1;
+}
+function mpRosterList(){
+  // [{slot, peerId}] for everyone INCLUDING host
+  const list = [{slot: 0, peerId: net.myId || 'host'}];
+  for(const peerId in net.peerSlot){
+    list.push({slot: net.peerSlot[peerId], peerId});
+  }
+  return list;
+}
+function mpApplyRoster(roster, mySlot){
+  // Mark slots that other humans occupy as remote
+  if(!state.squad) return;
+  const remoteSlots = new Set();
+  for(const p of (roster || [])){
+    if(p.slot !== mySlot) remoteSlots.add(p.slot);
+  }
+  for(let i = 0; i < state.squad.length; i++){
+    const sm = state.squad[i];
+    if(remoteSlots.has(i)){
+      sm.remotePlayer = true;
+      sm.atBase = false;
+      sm.group.visible = !sm.dead;
+      // 远端玩家头顶名字标签
+      mpAttachLabel(sm);
+    } else {
+      if(sm.remotePlayer){
+        sm.remotePlayer = false;
+        mpDetachLabel(sm);
+        // restore AI visibility behavior on next setActive call
+      }
+    }
+  }
+}
+// 头顶名字标签：用 canvas 贴在 Sprite 上
+function mpAttachLabel(sm){
+  if(sm._label) return;
+  const c = document.createElement('canvas'); c.width = 256; c.height = 64;
+  const cx = c.getContext('2d');
+  cx.fillStyle = 'rgba(0,0,0,0.55)'; cx.fillRect(0, 8, 256, 48);
+  cx.strokeStyle = sm.def.color || '#ffb347'; cx.lineWidth = 2;
+  cx.strokeRect(1, 9, 254, 46);
+  cx.fillStyle = sm.def.color || '#ffb347';
+  cx.font = 'bold 22px sans-serif'; cx.textAlign = 'center';
+  cx.fillText(sm.def.name + ' (玩家)', 128, 38);
+  const tex = new THREE.CanvasTexture(c);
+  const mat = new THREE.SpriteMaterial({map: tex, depthTest: false, transparent: true});
+  const sp = new THREE.Sprite(mat);
+  sp.scale.set(2.2, 0.55, 1);
+  sp.position.set(0, 2.4, 0);
+  sm.group.add(sp);
+  sm._label = sp;
+}
+function mpDetachLabel(sm){
+  if(!sm._label) return;
+  sm.group.remove(sm._label);
+  if(sm._label.material){
+    if(sm._label.material.map) sm._label.material.map.dispose();
+    sm._label.material.dispose();
+  }
+  sm._label = null;
+}
+
 function mpInit(){
-  document.getElementById('mp-host-btn').addEventListener('click', ()=>{
-    if(typeof Peer === 'undefined'){ mpSetStatus('PeerJS 未加载（需联网）','#c8302a'); return; }
-    if(mpFile()) mpSetStatus('提示：file:// 下信令稳定性较差，建议用 python -m http.server','#cc8a3a');
-    else         mpSetStatus('正在创建房间...','#aaa');
-    let peer;
-    try { peer = new Peer(undefined, PEER_CONFIG); }
-    catch(err){ mpSetStatus('PeerJS 初始化失败：'+err.message, '#c8302a'); return; }
-    net.peer = peer; net.role = 'host';
-    const openTimer = setTimeout(()=>{
-      if(!net.myId){ mpSetStatus('信令超时（25s）— 检查网络/代理是否阻断 wss', '#c8302a'); }
-    }, CONNECT_TIMEOUT_MS);
-    peer.on('open', id => {
-      clearTimeout(openTimer);
-      net.myId = id; net.enabled = true;
-      mpSetStatus('房间ID: '+id+'   (双击复制 · 把这串字符发给好友)','#5acc6a');
-      const st = document.getElementById('mp-status');
-      st.style.cursor = 'pointer';
-      st.ondblclick = ()=>{ navigator.clipboard && navigator.clipboard.writeText(id); st.textContent = '已复制 '+id; };
-      mpSetButtonsConnected(true);
-    });
-    peer.on('connection', conn => mpAttachConn(conn));
-    peer.on('disconnected', ()=> mpSetStatus('与信令断开，正在重连...','#cc8a3a'));
-    peer.on('error', e => {
-      console.error('[mp host] peer error', e);
-      mpSetStatus('错误('+e.type+'): '+(e.message||'未知')+'  控制台 F12 看详情', '#c8302a');
-    });
-  });
-  document.getElementById('mp-join-btn').addEventListener('click', ()=>{
-    if(typeof Peer === 'undefined'){ mpSetStatus('PeerJS 未加载（需联网）','#c8302a'); return; }
-    const hostId = document.getElementById('mp-join-id').value.trim();
-    if(!hostId){ mpSetStatus('请输入房间ID','#c8302a'); return; }
-    mpSetStatus('正在登记信令...', '#aaa');
-    let peer;
-    try { peer = new Peer(undefined, PEER_CONFIG); }
-    catch(err){ mpSetStatus('PeerJS 初始化失败：'+err.message, '#c8302a'); return; }
-    net.peer = peer; net.role = 'client';
-    let connectTimer = null;
-    const openTimer = setTimeout(()=>{
-      if(!net.myId){ mpSetStatus('信令超时（25s）— 检查网络 / 关闭代理 / 用手机热点', '#c8302a'); }
-    }, CONNECT_TIMEOUT_MS);
-    peer.on('open', id => {
-      clearTimeout(openTimer);
-      net.myId = id;
-      mpSetStatus('已登记自己（'+id.slice(0,6)+'...），正在连接房主...', '#aaa');
-      // reliable 用于握手；之后我们高频发送的位置数据可以走 unordered/unreliable，但 PeerJS 一旦 open 之后是同一通道
-      const conn = peer.connect(hostId, {reliable: true, serialization: 'json'});
-      mpAttachConn(conn);
-      connectTimer = setTimeout(()=>{
-        if(!conn.open){
-          mpSetStatus('25s 没握手成功 — 房主在线？房间ID 对吗？两边都在内网时可能需要切手机热点', '#c8302a');
-          try { conn.close(); } catch(e){}
-        }
-      }, CONNECT_TIMEOUT_MS);
-      conn.on('open', ()=>{ if(connectTimer) clearTimeout(connectTimer); });
-    });
-    peer.on('disconnected', ()=> mpSetStatus('与信令断开，正在重连...','#cc8a3a'));
-    peer.on('error', e => {
-      console.error('[mp client] peer error', e);
-      let hint = '';
-      if(e.type === 'peer-unavailable') hint = ' (房间ID不存在或房主已离线)';
-      else if(e.type === 'network')      hint = ' (网络问题 — 检查代理/防火墙)';
-      else if(e.type === 'server-error') hint = ' (PeerJS 公共信令服务器异常 — 稍后重试)';
-      mpSetStatus('错误('+e.type+')'+hint+'  F12 看详情', '#c8302a');
-    });
-  });
+  document.getElementById('mp-host-btn').addEventListener('click', mpStartHost);
+  document.getElementById('mp-join-btn').addEventListener('click', mpStartClient);
   document.getElementById('mp-leave-btn').addEventListener('click', mpLeave);
 }
-function mpAttachConn(conn){
-  conn.on('open', ()=>{
-    net.conns.push(conn);
-    net.enabled = true;
-    mpSetStatus('✓ 已连接 · 在线 '+(net.conns.length+1)+' 人', '#5acc6a');
+
+function mpStartHost(){
+  if(typeof Peer === 'undefined'){ mpSetStatus('PeerJS 未加载（需联网）','#c8302a'); return; }
+  if(mpFile()) mpSetStatus('提示：file:// 下信令稳定性较差，建议用 python -m http.server','#cc8a3a');
+  else         mpSetStatus('正在创建房间...','#aaa');
+  let peer;
+  try { peer = new Peer(undefined, PEER_CONFIG); }
+  catch(err){ mpSetStatus('PeerJS 初始化失败：'+err.message, '#c8302a'); return; }
+  net.peer = peer; net.role = 'host'; net.mySlot = 0;
+  const openTimer = setTimeout(()=>{
+    if(!net.myId){ mpSetStatus('信令超时（25s）— 检查网络/代理是否阻断 wss', '#c8302a'); }
+  }, CONNECT_TIMEOUT_MS);
+  peer.on('open', id => {
+    clearTimeout(openTimer);
+    net.myId = id; net.enabled = true;
+    mpSetStatus('房间ID: '+id+'   (双击复制 · 把这串字符发给好友 · 你是房主=普莱斯)','#5acc6a');
+    const st = document.getElementById('mp-status');
+    st.style.cursor = 'pointer';
+    st.ondblclick = ()=>{ navigator.clipboard && navigator.clipboard.writeText(id); st.textContent = '已复制 '+id; };
     mpSetButtonsConnected(true);
-    console.log('[mp] connection opened with', conn.peer);
   });
-  conn.on('data', d => mpOnData(conn, d));
-  conn.on('close', ()=>{
-    net.conns = net.conns.filter(c => c !== conn);
-    if(net.remotes[conn.peer]){
-      state.scene && state.scene.remove(net.remotes[conn.peer].mesh);
-      delete net.remotes[conn.peer];
-    }
-    mpSetStatus(net.conns.length ? '在线 '+(net.conns.length+1)+' 人' : '对方已断开','#aaa');
-  });
-  conn.on('error', e => {
-    console.error('[mp] conn error', e);
-    mpSetStatus('连接错误：'+(e.type||e.message||e), '#c8302a');
+  peer.on('connection', conn => mpHostAccept(conn));
+  peer.on('disconnected', ()=> mpSetStatus('与信令断开，正在重连...','#cc8a3a'));
+  peer.on('error', e => {
+    console.error('[mp host] peer error', e);
+    mpSetStatus('错误('+e.type+'): '+(e.message||'未知')+'  F12 看详情', '#c8302a');
   });
 }
+
+function mpHostAccept(conn){
+  conn.on('open', ()=>{
+    const slot = mpFindFreeSlot();
+    if(slot < 0){
+      try { conn.send({t:'reject', reason:'房间已满（最多 '+(state.squad?state.squad.length:8)+' 人）'}); } catch(e){}
+      setTimeout(()=>{ try{conn.close();}catch(e){} }, 300);
+      return;
+    }
+    net.conns.push(conn);
+    net.peerSlot[conn.peer] = slot;
+    // host's view: this slot is now a remote human
+    if(state.squad && state.squad[slot]){
+      const sm = state.squad[slot];
+      sm.remotePlayer = true;
+      sm.atBase = false;
+      sm.group.visible = !sm.dead;
+      mpAttachLabel(sm);
+    }
+    const roster = mpRosterList();
+    try {
+      conn.send({t:'init', yourSlot: slot, roster, hostId: net.myId});
+    } catch(e){}
+    mpSendToAll({t:'roster', list: roster}, conn);
+    mpSetStatus('✓ 玩家加入 · 在线 '+(net.conns.length+1)+' 人 · 新玩家=槽位'+slot+' ('+(SQUAD_DEF[slot]||{name:'?'}).name+')', '#5acc6a');
+    console.log('[mp host] peer', conn.peer, '→ slot', slot);
+  });
+  conn.on('data', d => mpOnData(conn, d));
+  conn.on('close', ()=> mpHostKick(conn));
+  conn.on('error', e => console.warn('[mp host] conn err', conn.peer, e));
+}
+
+function mpHostKick(conn){
+  const slot = net.peerSlot[conn.peer];
+  if(slot != null && slot > 0 && state.squad && state.squad[slot]){
+    const sm = state.squad[slot];
+    sm.remotePlayer = false;
+    mpDetachLabel(sm);
+  }
+  delete net.peerSlot[conn.peer];
+  net.conns = net.conns.filter(c => c !== conn);
+  mpSendToAll({t:'roster', list: mpRosterList()});
+  mpSetStatus(net.conns.length ? '在线 '+(net.conns.length+1)+' 人' : '对方已断开 · 你仍是房主','#aaa');
+}
+
+function mpStartClient(){
+  if(typeof Peer === 'undefined'){ mpSetStatus('PeerJS 未加载（需联网）','#c8302a'); return; }
+  const hostId = document.getElementById('mp-join-id').value.trim();
+  if(!hostId){ mpSetStatus('请输入房间ID','#c8302a'); return; }
+  mpSetStatus('正在登记信令...', '#aaa');
+  let peer;
+  try { peer = new Peer(undefined, PEER_CONFIG); }
+  catch(err){ mpSetStatus('PeerJS 初始化失败：'+err.message, '#c8302a'); return; }
+  net.peer = peer; net.role = 'client';
+  let connectTimer = null;
+  const openTimer = setTimeout(()=>{
+    if(!net.myId){ mpSetStatus('信令超时（25s）— 检查网络 / 关闭代理 / 用手机热点', '#c8302a'); }
+  }, CONNECT_TIMEOUT_MS);
+  peer.on('open', id => {
+    clearTimeout(openTimer);
+    net.myId = id;
+    mpSetStatus('已登记自己（'+id.slice(0,6)+'...），正在连接房主...', '#aaa');
+    const conn = peer.connect(hostId, {reliable: true, serialization: 'json'});
+    net.hostConn = conn;
+    net.conns = [conn];
+    conn.on('open', ()=>{
+      if(connectTimer) clearTimeout(connectTimer);
+      net.enabled = true;
+      mpSetStatus('✓ 已连接房主 · 等待分配槽位...', '#5acc6a');
+      mpSetButtonsConnected(true);
+    });
+    conn.on('data', d => mpOnData(conn, d));
+    conn.on('close', ()=>{ mpSetStatus('与房主断开','#cc8a3a'); mpLeave(); });
+    conn.on('error', e => {
+      console.error('[mp client] conn err', e);
+      mpSetStatus('连接错误：'+(e.type||e.message), '#c8302a');
+    });
+    connectTimer = setTimeout(()=>{
+      if(!conn.open){
+        mpSetStatus('25s 没握手成功 — 房主在线？房间ID 对吗？两边都在内网时可能需要切手机热点', '#c8302a');
+        try { conn.close(); } catch(e){}
+      }
+    }, CONNECT_TIMEOUT_MS);
+  });
+  peer.on('disconnected', ()=> mpSetStatus('与信令断开，正在重连...','#cc8a3a'));
+  peer.on('error', e => {
+    console.error('[mp client] peer error', e);
+    let hint = '';
+    if(e.type === 'peer-unavailable') hint = ' (房间ID不存在或房主已离线)';
+    else if(e.type === 'network')      hint = ' (网络问题 — 检查代理/防火墙)';
+    else if(e.type === 'server-error') hint = ' (PeerJS 公共信令服务器异常 — 稍后重试)';
+    mpSetStatus('错误('+e.type+')'+hint+'  F12 看详情', '#c8302a');
+  });
+}
+
 function mpLeave(){
   net.conns.forEach(c => { try{c.close();}catch(e){} });
   net.conns = [];
   if(net.peer){ try{net.peer.destroy();}catch(e){} net.peer = null; }
-  for(const id in net.remotes){
-    if(state.scene) state.scene.remove(net.remotes[id].mesh);
+  if(state.squad){
+    for(const s of state.squad){
+      if(s.remotePlayer){ s.remotePlayer = false; mpDetachLabel(s); }
+    }
   }
-  net.remotes = {}; net.enabled = false; net.role = null;
+  net.peerSlot = {}; net.takenPickups = new Set();
+  net.enabled = false; net.role = null; net.hostConn = null;
+  net.mySlot = -1; net.myId = null;
   mpSetStatus('单机模式','#888');
   mpSetButtonsConnected(false);
 }
+
 function mpOnData(conn, d){
   if(!d || !d.t) return;
-  if(d.t === 'pos'){
-    let r = net.remotes[conn.peer];
-    if(!r){
-      // 用一个简单角色模型（颜色不同于本机）
-      const opts = {body:0x2a4a6a, vest:0x355577, helmet:0x222, skin:0xc9a070};
-      const mesh = (typeof buildCharacter === 'function') ? buildCharacter(opts)
-                   : new THREE.Mesh(new THREE.BoxGeometry(0.6,1.7,0.4), new THREE.MeshStandardMaterial({color:0x55aaee}));
-      mesh.position.set(d.x||0, d.y||0, d.z||0);
-      if(state.scene) state.scene.add(mesh);
-      r = net.remotes[conn.peer] = {mesh, last:{x:d.x,y:d.y,z:d.z,yaw:d.yaw}};
+  switch(d.t){
+    case 'init': {
+      net.mySlot = d.yourSlot;
+      mpApplyRoster(d.roster, d.yourSlot);
+      mpSetStatus('✓ 已连接 · 你的槽位 '+d.yourSlot+' = '+(SQUAD_DEF[d.yourSlot]||{name:'?'}).name+'   (T 开聊天)', '#5acc6a');
+      // If game already running, auto-switch to assigned slot
+      if(state.gameStarted && state.squad){
+        const me = state.squad[d.yourSlot];
+        if(me){
+          me.remotePlayer = false;       // I control this locally
+          me.atBase = false;
+          // Hide other UI for AI patrol; force-active
+          state.activeIdx = d.yourSlot;
+          state.active = me;
+          state.squad.forEach((s,j)=>{
+            if(s.remotePlayer) s.group.visible = !s.dead;
+            else s.group.visible = (j !== d.yourSlot || !!s.inVehicle);
+          });
+          rebuildViewmodel && rebuildViewmodel();
+          if(state.viewmodel) state.viewmodel.visible = !me.inVehicle;
+          updateSquadUI && updateSquadUI();
+        }
+      }
+      break;
     }
-    r.last = {x:d.x, y:d.y, z:d.z, yaw:d.yaw||0};
-  } else if(d.t === 'fire'){
-    // 简易枪口火光（视觉提示）
-    const r = net.remotes[conn.peer];
-    if(r && r.mesh){
-      const flash = new THREE.PointLight(0xffcc66, 2.5, 6);
-      flash.position.copy(r.mesh.position); flash.position.y += 1.4;
-      state.scene.add(flash);
-      setTimeout(()=>state.scene.remove(flash), 60);
+    case 'roster': {
+      mpApplyRoster(d.list, net.mySlot);
+      break;
+    }
+    case 'reject': {
+      mpSetStatus('被房主拒绝：'+d.reason, '#c8302a');
+      mpLeave();
+      break;
+    }
+    case 'pl': {
+      const slot = d.s;
+      if(slot === net.mySlot) return;
+      const sm = state.squad && state.squad[slot];
+      if(!sm) return;
+      // 远端玩家位置/朝向直接套用
+      sm.pos.set(d.x, d.y, d.z);
+      sm.yaw = d.yaw;
+      sm.hp = d.hp;
+      sm.isAiming   = !!(d.f & 1);
+      sm.isSprinting= !!(d.f & 2);
+      sm.isCrouched = !!(d.f & 4);
+      sm.group.position.copy(sm.pos);
+      sm.group.rotation.y = d.yaw;
+      sm.group.rotation.x = sm.isCrouched ? 0.1 : 0;
+      if(d.dead && !sm.dead){
+        sm.dead = true;
+        sm.group.rotation.z = Math.PI/2; sm.group.rotation.x = 0;
+        sm.group.position.set(sm.pos.x, surfaceYAt(sm.pos.x, sm.pos.z, sm.pos.y), sm.pos.z);
+        mpDetachLabel(sm);
+        log(sm.def.name+' 阵亡！','#c8302a');
+      }
+      if(net.role === 'host') mpSendToAll(d, conn);
+      break;
+    }
+    case 'fire': {
+      // Tracer + flash from remote player's gun
+      try {
+        tracerXYZ(d.ox, d.oy, d.oz,
+                  d.ox + d.dx * (d.r||60),
+                  d.oy + d.dy * (d.r||60),
+                  d.oz + d.dz * (d.r||60),
+                  0xffcc66);
+      } catch(e){}
+      const sm = state.squad && state.squad[d.s];
+      if(sm){
+        const flash = new THREE.PointLight(0xffcc66, 2.5, 6);
+        flash.position.set(d.ox, d.oy, d.oz);
+        state.scene.add(flash);
+        setTimeout(()=>state.scene.remove(flash), 70);
+      }
+      if(net.role === 'host') mpSendToAll(d, conn);
+      break;
+    }
+    case 'dmgE': {
+      // 客户端要求 host 对敌人造成伤害
+      if(net.role !== 'host') return;
+      const e = state.enemies[d.i];
+      if(!e || e.hp <= 0) return;
+      let dmg = d.dmg;
+      const head = !!d.head;
+      if(head && e.helmetArmor > 0){
+        const red = e.type==='heavy' ? 0.7 : 0.5;
+        const ab = Math.min(e.helmetArmor, dmg*red); e.helmetArmor -= ab; dmg -= ab;
+      } else if(!head && e.armor > 0){
+        const red = e.type==='heavy' ? 0.6 : 0.4;
+        const ab = Math.min(e.armor, dmg*red); e.armor -= ab; dmg -= ab;
+      }
+      e.hp -= dmg; e.hitFlash = 0.15;
+      e.state = 'aggro';
+      if(e.hp <= 0){
+        e.group.rotation.z = Math.PI/2; e.group.position.y -= 0.2;
+        const reward = head ? (10 + Math.floor(Math.random()*15)) : (4 + Math.floor(Math.random()*8));
+        const shooter = state.squad[d.s];
+        if(shooter){ shooter.gold = (shooter.gold||0) + reward; saveGold(); }
+        mpSendToAll({t:'kill', i:d.i, s:d.s, r:reward, h:head});
+        log((shooter?shooter.def.name:'玩家'+d.s)+(head?' 爆头！':' 击杀')+' +'+reward+'金币','#ffb347');
+      }
+      break;
+    }
+    case 'kill': {
+      // Host → all clients: enemy killed
+      const e = state.enemies[d.i];
+      if(e){
+        e.hp = 0;
+        if(e.group.rotation.z !== Math.PI/2){
+          e.group.rotation.z = Math.PI/2; e.group.position.y -= 0.2;
+        }
+      }
+      const sh = state.squad && state.squad[d.s];
+      const name = sh ? sh.def.name : '玩家'+d.s;
+      log(name + (d.h ? ' 爆头！' : ' 击杀') + ' +' + d.r + ' 金币', '#ffb347');
+      if(d.s === net.mySlot && state.active){
+        state.active.gold = (state.active.gold||0) + d.r;
+        saveGold();
+      }
+      break;
+    }
+    case 'world': {
+      // Host → client: snapshot of enemy positions / hp
+      if(net.role !== 'client') return;
+      for(const eu of (d.e || [])){
+        const e = state.enemies[eu.i];
+        if(!e) continue;
+        if(!e._snap) e._snap = {x:e.pos.x, y:e.pos.y, z:e.pos.z, yaw:e.yaw};
+        e._snap.x = eu.x; e._snap.y = eu.y; e._snap.z = eu.z; e._snap.yaw = eu.yaw;
+        if(eu.hp <= 0 && e.hp > 0){
+          e.group.rotation.z = Math.PI/2; e.group.position.y -= 0.2;
+        }
+        e.hp = eu.hp;
+      }
+      break;
+    }
+    case 'pick': {
+      if(net.role !== 'host') return;
+      if(net.takenPickups.has(d.i)) return;
+      net.takenPickups.add(d.i);
+      mpSendToAll({t:'pickT', i:d.i, s:d.s});
+      break;
+    }
+    case 'pickT': {
+      net.takenPickups.add(d.i);
+      const p = state.pickups && state.pickups[d.i];
+      if(p && p.group && p.group.parent) p.group.parent.remove(p.group);
+      break;
+    }
+    case 'chat': {
+      const sm = state.squad && state.squad[d.s];
+      const name = sm ? sm.def.name : '玩家'+d.s;
+      const color = (sm && sm.def.color) ? sm.def.color : '#88ccff';
+      log('💬 '+name+'：'+d.txt, color);
+      if(net.role === 'host') mpSendToAll(d, conn);
+      break;
     }
   }
 }
+
 function mpTick(dt){
-  if(!net.enabled || !state.active) return;
-  // 平滑跟随远端最新位置
-  for(const id in net.remotes){
-    const r = net.remotes[id];
-    if(!r.last) continue;
-    r.mesh.position.lerp(new THREE.Vector3(r.last.x, r.last.y, r.last.z), Math.min(1, dt*10));
-    r.mesh.rotation.y = r.last.yaw;
+  if(!net.enabled || net.mySlot < 0) return;
+  // Lerp enemy positions on client
+  if(net.role === 'client'){
+    const _v = new THREE.Vector3();
+    for(const e of state.enemies){
+      if(!e._snap) continue;
+      _v.set(e._snap.x, e._snap.y, e._snap.z);
+      e.pos.lerp(_v, Math.min(1, dt*8));
+      e.group.position.copy(e.pos);
+      if(e.hp > 0){
+        e.yaw = e._snap.yaw;
+        e.group.rotation.y = e.yaw;
+      }
+    }
   }
-  net.sendAcc += dt;
-  if(net.sendAcc < net.sendInterval) return;
-  net.sendAcc = 0;
-  const a = state.active;
-  const payload = {t:'pos', x:a.pos.x, y:a.pos.y, z:a.pos.z, yaw:a.yaw};
-  for(const c of net.conns){
-    try { c.send(payload); } catch(e){}
+  // Send my player state
+  if(!state.active) return;
+  net.plAcc += dt;
+  if(net.plAcc >= net.PL_RATE){
+    net.plAcc = 0;
+    const a = state.active;
+    const flags = (a.isAiming?1:0) | (a.isSprinting?2:0) | (a.isCrouched?4:0);
+    const payload = {
+      t:'pl', s:net.mySlot,
+      x:a.pos.x, y:a.pos.y, z:a.pos.z, yaw:a.yaw,
+      hp:a.hp|0, dead:!!a.dead, f:flags
+    };
+    if(net.role === 'host') mpSendToAll(payload);
+    else mpSendToHost(payload);
+  }
+  // Host broadcasts world snapshot
+  if(net.role === 'host'){
+    net.worldAcc += dt;
+    if(net.worldAcc >= net.WORLD_RATE){
+      net.worldAcc = 0;
+      const eList = [];
+      for(let i = 0; i < state.enemies.length && eList.length < 70; i++){
+        const e = state.enemies[i];
+        eList.push({i, x:+e.pos.x.toFixed(2), y:+e.pos.y.toFixed(2), z:+e.pos.z.toFixed(2),
+                    hp:e.hp|0, yaw:+e.yaw.toFixed(2)});
+      }
+      mpSendToAll({t:'world', e:eList});
+    }
   }
 }
-function mpBroadcastFire(){
-  if(!net.enabled) return;
-  for(const c of net.conns){
-    try { c.send({t:'fire'}); } catch(e){}
+
+// 玩家开火时调用：广播 tracer 信息让其他人看见弹道和枪口火光
+function mpBroadcastFire(originVec3, dirVec3, range){
+  if(!net.enabled || net.mySlot < 0) return;
+  const payload = {
+    t:'fire', s:net.mySlot,
+    ox:+originVec3.x.toFixed(2), oy:+originVec3.y.toFixed(2), oz:+originVec3.z.toFixed(2),
+    dx:+dirVec3.x.toFixed(3), dy:+dirVec3.y.toFixed(3), dz:+dirVec3.z.toFixed(3),
+    r: range||60
+  };
+  if(net.role === 'host') mpSendToAll(payload);
+  else mpSendToHost(payload);
+}
+
+// 客户端：要求 host 对敌人造成伤害（host 是权威方）
+function mpRequestDamageEnemy(enemyIdx, dmg, head){
+  if(!net.enabled || net.mySlot < 0) return;
+  const payload = {t:'dmgE', s:net.mySlot, i:enemyIdx, dmg, head:!!head};
+  if(net.role === 'host'){
+    mpOnData(null, payload);   // 自己处理
+  } else {
+    mpSendToHost(payload);
   }
+}
+
+// 客户端：要求拾取（host 校验是否已被别人捡走）
+function mpRequestPickup(pickupIdx){
+  if(!net.enabled || net.mySlot < 0) return true;
+  if(net.takenPickups.has(pickupIdx)) return false;
+  const payload = {t:'pick', s:net.mySlot, i:pickupIdx};
+  net.takenPickups.add(pickupIdx); // 本地立即标记，避免重复
+  if(net.role === 'host'){
+    mpSendToAll({t:'pickT', i:pickupIdx, s:net.mySlot});
+  } else {
+    mpSendToHost(payload);
+  }
+  return true;
+}
+
+function mpChat(text){
+  if(!net.enabled || net.mySlot < 0 || !text) return;
+  const txt = text.slice(0, 120);
+  const sm = state.squad[net.mySlot];
+  const color = (sm && sm.def.color) ? sm.def.color : '#88ccff';
+  log('💬 '+(sm?sm.def.name:'你')+'（你）：'+txt, color);
+  const payload = {t:'chat', s:net.mySlot, txt};
+  if(net.role === 'host') mpSendToAll(payload);
+  else mpSendToHost(payload);
 }
 
 // 跨设备金币存档：导出/导入字符串（Base64 编码的 JSON）
@@ -4969,11 +5377,19 @@ function bindButtons(){
       s.group.position.copy(s.pos);
       s.group.visible = true;
     });
-    // 主控 = 普莱斯，他从黑板附近开始（脱离 atBase）
-    state.squad[0].atBase = false;
-    state.squad[0].pos.set(8, 0, 188); // 黑板前，塔南面 // 黑板附近
-    state.squad[0].group.position.copy(state.squad[0].pos);
-    setActive(0);
+    // 联机：我的槽位由 host 分配；单机 = 槽位 0 (普莱斯)
+    const mySlot = (net.enabled && net.mySlot >= 0) ? net.mySlot : 0;
+    const me = state.squad[mySlot];
+    me.atBase = false;
+    // 出生点：黑板附近，略微随机散开避免重叠
+    me.pos.set(8 + (mySlot % 3) * 1.5, 0, 188 - (mySlot % 3) * 1.5);
+    me.group.position.copy(me.pos);
+    // 联机：先同步当前的 roster（标记远端玩家槽位）
+    if(net.enabled){
+      const roster = (net.role === 'host') ? mpRosterList() : null;
+      if(roster) mpApplyRoster(roster, mySlot);
+    }
+    setActive(mySlot);
     state.gameStarted=true;
     state.renderer.domElement.requestPointerLock();
   });
