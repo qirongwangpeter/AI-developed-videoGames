@@ -2702,6 +2702,27 @@ function rebuildViewmodel(){
   // 启动换枪动画：枪先下移再升回
   state.swapAnim = 0.4;
 }
+// 防卡墙：若位置被障碍物阻挡，向外螺旋查找安全点并把人推过去
+function unstuckSquadMember(sm){
+  if(!sm) return;
+  // 把可能遗留的蹲伏/MG 姿态 Y 偏移先归零
+  sm.group.rotation.x = 0;
+  // 玩家碰撞半径 0.5（updatePlayer 用 0.5），但 AI 用 0.4，所以切换后可能正好卡住
+  if(!blocked(sm.pos.x, sm.pos.z, 0.55, sm.pos.y||0)) return;
+  for(let r=0.4; r<10; r+=0.35){
+    for(let a=0; a<12; a++){
+      const ang = a * Math.PI / 6;
+      const nx = sm.pos.x + Math.cos(ang) * r;
+      const nz = sm.pos.z + Math.sin(ang) * r;
+      if(!blocked(nx, nz, 0.55, sm.pos.y||0)){
+        sm.pos.x = nx; sm.pos.z = nz;
+        sm.group.position.copy(sm.pos);
+        return;
+      }
+    }
+  }
+}
+
 function setActive(i){
   if(i<0||i>=state.squad.length||state.squad[i].dead) return;
   state.activeIdx=i; state.active=state.squad[i];
@@ -2710,6 +2731,9 @@ function setActive(i){
     state.active.atBase = false;
     log(state.active.def.name+' 加入战场','#ffb347');
   }
+  // 防止 AI 留下来的位置 / 姿态把新主控卡在墙内或地下
+  unstuckSquadMember(state.active);
+  state.active.onGround = true; state.active.vy = 0;
   state.squad.forEach((s,j)=>{ s.group.visible=(j!==i||!!s.inVehicle); });
   rebuildViewmodel();
   state.viewmodel.visible=!state.active.inVehicle;
@@ -3195,7 +3219,10 @@ function fireRay(o,dir,dmg,range,source){
     hS.hp-=d;
     if(hS===state.active) state.active.damageFlash=0.4;
     if(hS.hp<=0&&!hS.dead){
-      hS.dead=true; hS.group.rotation.z=Math.PI/2; hS.group.position.y-=0.2;
+      hS.dead=true; hS.group.rotation.z=Math.PI/2; hS.group.rotation.x=0;
+      // 死亡时按所在地表 Y 放平尸体，消除蹲伏 / MG 操作姿势遗留的负 Y 偏移
+      const _deathSurfY = surfaceYAt(hS.pos.x, hS.pos.z, hS.pos.y);
+      hS.group.position.set(hS.pos.x, _deathSurfY, hS.pos.z);
       log(hS.def.name+' 阵亡！','#c8302a');
       if(hS===state.active){
         const li=state.squad.findIndex(s=>!s.dead);
