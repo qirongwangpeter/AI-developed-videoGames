@@ -150,10 +150,27 @@ canvas{display:block}
     </div>
     <div id="mp-status" style="margin-top:8px;font-size:11px;color:#888;text-align:center">单机模式 · 也可仅本机游玩</div>
   </div>
-  <div id="save-panel" style="margin-top:12px;background:rgba(10,15,20,.6);border:1px solid #3a4a55;padding:10px 18px;max-width:560px">
-    <div style="color:#ffd24a;letter-spacing:3px;font-size:12px;text-align:center;margin-bottom:6px">▍ 金币存档（跨设备）</div>
-    <div style="font-size:10px;color:#888;text-align:center;margin-bottom:8px">
-      金币默认只保存在本机浏览器。换电脑请用 <b>导出</b> 把字符串发给自己，在另一台机器上 <b>导入</b>。
+  <div id="save-panel" style="margin-top:12px;background:rgba(10,15,20,.6);border:1px solid #3a4a55;padding:10px 18px;max-width:620px">
+    <div style="color:#ffd24a;letter-spacing:3px;font-size:12px;text-align:center;margin-bottom:6px">▍ 金币存档</div>
+
+    <!-- 云存档（推荐路径） -->
+    <div style="background:rgba(255,210,74,.06);border:1px dashed #ffd24a;padding:8px 12px;margin-bottom:10px;border-radius:3px">
+      <div style="font-size:11px;color:#ffd24a;margin-bottom:6px">☁ 云存档（推荐 · 真跨设备）</div>
+      <div style="font-size:10px;color:#888;margin-bottom:6px">
+        部署一个免费的 Cloudflare Worker，5 分钟搞定。说明：仓库 <code>worker/DEPLOY.md</code>。
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 100px auto auto;gap:6px;font-size:11px;align-items:center">
+        <input id="cloud-url"  placeholder="Worker URL (https://...workers.dev)" style="background:#111;color:#fff;border:1px solid #555;padding:5px 8px;font-family:inherit;grid-column:span 2">
+        <input id="cloud-user" placeholder="用户名" maxlength="32" style="background:#111;color:#fff;border:1px solid #555;padding:5px 8px;font-family:inherit">
+        <input id="cloud-pin"  placeholder="PIN(4-12数字)" maxlength="12" style="background:#111;color:#fff;border:1px solid #555;padding:5px 8px;width:110px;font-family:inherit">
+        <button id="cloud-enable-btn" style="padding:5px 12px;background:transparent;color:#5acc6a;border:1px solid #5acc6a;cursor:pointer;font-family:inherit">启用云存档</button>
+      </div>
+      <div id="cloud-status" style="margin-top:6px;font-size:11px;color:#888">未启用</div>
+    </div>
+
+    <!-- 本地导出/导入（应急 / 不想用云的时候） -->
+    <div style="font-size:10px;color:#888;text-align:center;margin-bottom:6px">
+      或者：手动导出存档字符串发给自己，在另一台机器上导入。
     </div>
     <div style="display:flex;gap:10px;justify-content:center;align-items:center;flex-wrap:wrap;font-size:12px">
       <button id="save-export-btn" style="padding:6px 14px;background:transparent;color:#ffd24a;border:1px solid #ffd24a;cursor:pointer;font-family:inherit">导出存档</button>
@@ -2661,7 +2678,11 @@ const SQUAD_DEF = [
   {id:'maojq', name:'毛佳倩',icon:'倩',color:'#cc6acc',role:'ANW 医疗兵',skill:'群体回血+复活全员',cdMax:40,weapon:'MP5',secondary:'GLOCK',
     opts:{body:0x4a2a4a,vest:0x6a2a6a,vestText:'ANW·医疗',pouches:true,medicCross:true,ponytail:true,glasses:true,detail:'maojq'}},
   {id:'maobw', name:'毛博文',icon:'博',color:'#cc8a3a',role:'ANW 重机枪手',skill:'重机枪压制扫射',cdMax:35,weapon:'M249',secondary:'DEAGLE',
-    opts:{body:0x4a3a20,vest:0x5a4a25,vestText:'ANW·重火',helmet:0x222,pouches:true,kneepads:true,heavyArmor:true,detail:'maobw'}}
+    opts:{body:0x4a3a20,vest:0x5a4a25,vestText:'ANW·重火',helmet:0x222,pouches:true,kneepads:true,heavyArmor:true,detail:'maobw'}},
+  {id:'pengjl',name:'彭家乐',icon:'乐',color:'#3acccc',role:'ANW 工程兵',skill:'防御工事+全员护盾',cdMax:35,weapon:'M4A1',secondary:'GLOCK',
+    opts:{body:0x1a4a4a,vest:0x2a5a5a,vestText:'ANW·工程',helmet:0x333333,pouches:true,kneepads:true,glasses:true,detail:'pengjl'}},
+  {id:'zhouhh',name:'周华航',icon:'航',color:'#aa66cc',role:'ANW 侦察兵',skill:'全图扫描+标记所有敌人',cdMax:30,weapon:'MP5',secondary:'GLOCK',
+    opts:{body:0x3a2a4a,vest:0x4a3a5a,vestText:'ANW·侦察',boonie:0x2a2a3a,pouches:true,nvg:true,glasses:true,detail:'zhouhh'}}
 ];
 const VM_HIP=new THREE.Vector3(0.18,-0.18,-0.32);
 const VM_AIM=new THREE.Vector3(0,-0.07,-0.22);
@@ -2681,6 +2702,143 @@ function saveGold(){
   const db = {};
   for(const s of state.squad) db[s.def.id] = s.gold || 0;
   try { localStorage.setItem('shadowContract_gold', JSON.stringify(db)); } catch(e){}
+  // 触发云端推送（带 debounce 防抖）
+  cloudSchedulePush();
+}
+
+// ============================== [CLOUD SAVE (Cloudflare Worker)] ===============
+// 配置存在 localStorage。启用后：
+//   - 开局前从云端拉取并合并（云端胜出）到本地
+//   - saveGold 时 debounce 2 秒后推送到云端
+const cloud = {
+  url: localStorage.getItem('cloudUrl') || '',
+  user: localStorage.getItem('cloudUser') || '',
+  pin: localStorage.getItem('cloudPin') || '',
+  enabled: localStorage.getItem('cloudEnabled') === '1',
+  lastSync: 0,
+  pushTimer: null,
+  pushing: false,
+  failCount: 0,
+  lockUntil: 0,
+};
+function cloudReady(){
+  return cloud.enabled && cloud.url && cloud.user && cloud.pin;
+}
+function cloudStatusEl(){
+  return document.getElementById('cloud-status');
+}
+function cloudSetStatus(msg, color){
+  const el = cloudStatusEl();
+  if(el){ el.textContent = msg; el.style.color = color || '#888'; }
+}
+async function cloudLoad(){
+  if(!cloudReady()) return null;
+  if(Date.now() < cloud.lockUntil){
+    cloudSetStatus('☁ 连接被锁定，请稍后再试', '#c8302a');
+    return null;
+  }
+  try {
+    const u = cloud.url.replace(/\/+$/, '') + '/load?user=' + encodeURIComponent(cloud.user) + '&pin=' + encodeURIComponent(cloud.pin);
+    const r = await fetch(u);
+    const j = await r.json().catch(()=>({error:'非 JSON 响应'}));
+    if(!r.ok) throw new Error(j.error || ('HTTP '+r.status));
+    cloud.lastSync = Date.now();
+    return j.db || {};
+  } catch(e){
+    console.warn('[cloud] load failed', e);
+    cloud.failCount++;
+    if(cloud.failCount >= 5){ cloud.lockUntil = Date.now() + 60000; cloud.failCount = 0; }
+    cloudSetStatus('☁ 拉取失败：'+e.message, '#c8302a');
+    return null;
+  }
+}
+async function cloudSave(db){
+  if(!cloudReady() || cloud.pushing) return false;
+  if(Date.now() < cloud.lockUntil) return false;
+  cloud.pushing = true;
+  try {
+    const r = await fetch(cloud.url.replace(/\/+$/, '') + '/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user: cloud.user, pin: cloud.pin, db }),
+    });
+    const j = await r.json().catch(()=>({error:'非 JSON 响应'}));
+    if(!r.ok) throw new Error(j.error || ('HTTP '+r.status));
+    cloud.lastSync = Date.now();
+    cloudSetStatus('☁ 已启用 · 刚刚同步', '#5acc6a');
+    return true;
+  } catch(e){
+    console.warn('[cloud] save failed', e);
+    cloud.failCount++;
+    if(cloud.failCount >= 5){ cloud.lockUntil = Date.now() + 60000; cloud.failCount = 0; }
+    cloudSetStatus('☁ 推送失败：'+e.message, '#c8302a');
+    return false;
+  } finally {
+    cloud.pushing = false;
+  }
+}
+function cloudSchedulePush(){
+  if(!cloudReady()) return;
+  if(cloud.pushTimer) clearTimeout(cloud.pushTimer);
+  cloud.pushTimer = setTimeout(()=>{
+    cloud.pushTimer = null;
+    cloudSave(loadGoldDB());
+  }, 2000);
+}
+function bindCloudButtons(){
+  // 把 localStorage 里保存的配置填回 input
+  const urlIn = document.getElementById('cloud-url');
+  const userIn = document.getElementById('cloud-user');
+  const pinIn = document.getElementById('cloud-pin');
+  if(urlIn) urlIn.value = cloud.url;
+  if(userIn) userIn.value = cloud.user;
+  if(pinIn) pinIn.value = cloud.pin;
+  if(cloud.enabled){
+    cloudSetStatus('☁ 已启用 · 等待同步...', '#5acc6a');
+  }
+  const btn = document.getElementById('cloud-enable-btn');
+  if(!btn) return;
+  btn.addEventListener('click', async ()=>{
+    const url = urlIn.value.trim();
+    const user = userIn.value.trim();
+    const pin = pinIn.value.trim();
+    if(!url || !user || !pin){
+      cloudSetStatus('请把 URL、用户名、PIN 都填上', '#c8302a'); return;
+    }
+    if(!/^https?:\/\//.test(url)){
+      cloudSetStatus('URL 必须以 http(s):// 开头', '#c8302a'); return;
+    }
+    if(!/^[A-Za-z0-9_\-]{2,32}$/.test(user)){
+      cloudSetStatus('用户名必须 2-32 位字母/数字/-/_', '#c8302a'); return;
+    }
+    if(!/^[0-9]{4,12}$/.test(pin)){
+      cloudSetStatus('PIN 必须 4-12 位数字', '#c8302a'); return;
+    }
+    cloud.url = url; cloud.user = user; cloud.pin = pin; cloud.enabled = true;
+    localStorage.setItem('cloudUrl', url);
+    localStorage.setItem('cloudUser', user);
+    localStorage.setItem('cloudPin', pin);
+    localStorage.setItem('cloudEnabled', '1');
+    cloudSetStatus('☁ 正在测试连接...', '#aaa');
+    // 拉一次远端
+    const remoteDB = await cloudLoad();
+    if(remoteDB === null){ return; } // 状态已显示
+    // 合并：远端 > 本地。然后写回本地 + squad
+    const localDB = loadGoldDB();
+    const merged = { ...localDB };
+    let any = false;
+    for(const k in remoteDB){
+      if(merged[k] !== remoteDB[k]){ merged[k] = remoteDB[k]; any = true; }
+    }
+    localStorage.setItem('shadowContract_gold', JSON.stringify(merged));
+    if(state.squad){
+      for(const s of state.squad) s.gold = merged[s.def.id] || 0;
+    }
+    // 同步本地新数据到云
+    await cloudSave(merged);
+    const total = Object.values(merged).reduce((a,b)=>a+(+b||0),0);
+    cloudSetStatus('☁ 已启用 · 共 '+total+' 金币（'+Object.keys(merged).length+' 角色） · 已同步', '#5acc6a');
+  });
 }
 
 function buildSquad(){
@@ -3555,10 +3713,10 @@ function updateAIMate(sm,dt){
   }
   const role=sm.def.id;
   // OPT: 降低 AI 队员射程和射速，让玩家来主导战斗
-  const myRange=role==='ghost'?70:role==='wangqr'?40:role==='maobw'?45:role==='soap'?28:35;
-  const myFR=role==='ghost'?1500:role==='wangqr'?280:role==='maobw'?220:role==='soap'?420:500;
-  const myAcc=role==='ghost'?0.85:role==='wangqr'?0.5:0.65;
-  const myDmg=role==='ghost'?60:role==='wangqr'?12:role==='maobw'?14:role==='soap'?20:18;
+  const myRange=role==='ghost'?70:role==='wangqr'?40:role==='maobw'?45:role==='soap'?28:role==='pengjl'?38:role==='zhouhh'?50:35;
+  const myFR=role==='ghost'?1500:role==='wangqr'?280:role==='maobw'?220:role==='soap'?420:role==='pengjl'?350:role==='zhouhh'?600:500;
+  const myAcc=role==='ghost'?0.85:role==='wangqr'?0.5:role==='zhouhh'?0.7:0.65;
+  const myDmg=role==='ghost'?60:role==='wangqr'?12:role==='maobw'?14:role==='soap'?20:role==='pengjl'?16:role==='zhouhh'?15:18;
   let bestE=null,bestS=Infinity;
   for(const e of state.enemies){
     if(e.hp<=0||!e.active) continue;
@@ -3725,6 +3883,37 @@ function useSkill(){
       }, i*30);
     }
     log(`毛博文：火力压制！命中 ${hit} 名敌人`,d.color);
+  } else if(d.id==='pengjl'){
+    // 工程兵：防御工事 — 全队护盾 +100，身边放置沙袋掩体，回复护甲
+    state.squad.forEach(s=>{
+      if(s.dead) return;
+      s.armor = Math.min(s.armorMax||100, s.armor+100);
+      s.shield = (s.shield||0) + 100; // 工程兵特有：额外护盾层
+    });
+    // 放置一个视觉沙袋掩体
+    const sandbag = new THREE.Group();
+    for(let i=0;i<3;i++){
+      const bag = new THREE.Mesh(new THREE.BoxGeometry(0.8,0.3,0.4), new THREE.MeshStandardMaterial({color:0x8a7a5a,roughness:0.9}));
+      bag.position.set((i-1)*0.85, 0.15 + (i===1?0.3:0), 0);
+      sandbag.add(bag);
+    }
+    sandbag.position.copy(a.pos);
+    sandbag.position.y = 0;
+    sandbag.rotation.y = a.yaw;
+    state.scene.add(sandbag);
+    setTimeout(()=>{ try{ state.scene.remove(sandbag); }catch(e){} }, 15000);
+    log('彭家乐：防御工事！全队 +100 护甲 +100 护盾 (15s)',d.color);
+  } else if(d.id==='zhouhh'){
+    // 侦察兵：全图扫描 — 标记所有存活敌人 + 显示敌人位置 15 秒
+    let marked = 0;
+    for(const e of state.enemies){
+      if(e.hp <= 0 || !e.active) continue;
+      e.marked = 15; // 15 秒标记
+      marked++;
+    }
+    // 短时加速方便侦察兵走位
+    state.dashBuff = 6;
+    log(`周华航：全图扫描！标记 ${marked} 名敌人 (15s) + 速度提升 (6s)`,d.color);
   }
   updateSquadUI();
 }
@@ -3775,6 +3964,8 @@ function initInput(){
     if(e.code==='Digit6') setActive(5);
     if(e.code==='Digit7') setActive(6);
     if(e.code==='Digit8') setActive(7);
+    if(e.code==='Digit9') setActive(8);
+    if(e.code==='Digit0') setActive(9);
     if(e.code==='KeyV') useSkill();
     if(e.code==='KeyG') throwGrenade();
     if(e.code==='KeyH') useMedkit();
@@ -4650,6 +4841,16 @@ async function progressiveLoad(){
     fill.style.width=(12+(i+1)/steps.length*50)+'%';
     if(i%4===0) await frame();
   }
+  // 云存档预加载：把远端金币合并到本地，buildSquad 会读到最新数据
+  if(cloudReady()){
+    text.textContent='拉取云存档...';
+    const remoteDB = await cloudLoad();
+    if(remoteDB){
+      const localDB = loadGoldDB();
+      const merged = { ...localDB, ...remoteDB }; // 远端胜出
+      try { localStorage.setItem('shadowContract_gold', JSON.stringify(merged)); } catch(e){}
+    }
+  }
   text.textContent='生成小队...';
   buildSquad(); fill.style.width='70%';
   await frame();
@@ -4714,7 +4915,9 @@ const BASE_POSTS = [
   [35, 200],   // 东营房外
   [0, 213],    // 楼后中央走道
   [0, 230],    // 仓库间
-  [-22, 235]   // 远北
+  [-22, 235],  // 远北
+  [22, 235],   // 远北东侧
+  [0, 195]     // 中部掩体后
 ];
 
 function deploySquadMember(s){
@@ -4810,7 +5013,7 @@ function mpSetButtonsConnected(connected){
 // PeerJS 配置：开启详细日志 + 多个公网 ICE 服务器（含免费 TURN 中继，
 // 否则同时身处对称 NAT / 公司防火墙的两端 WebRTC 直连一定会失败）
 const PEER_CONFIG = {
-  debug: 2,
+  debug: 0,
   config: {
     iceServers: [
       { urls: 'stun:stun.l.google.com:19302' },
@@ -5332,7 +5535,14 @@ function bindSaveButtons(){
     try {
       const json = decodeURIComponent(escape(atob(raw.slice(4))));
       const db = JSON.parse(json);
-      if(typeof db !== 'object' || db === null) throw new Error('解析后不是对象');
+      if(typeof db !== 'object' || db === null || Array.isArray(db)) throw new Error('解析后不是对象');
+      // 安全验证：每个值必须是 0~999999 的有限数字，最多 50 键
+      const dbKeys = Object.keys(db);
+      if(dbKeys.length > 50) throw new Error('键数过多（上限 50）');
+      for(const k of dbKeys){
+        const v = db[k];
+        if(typeof v !== 'number' || !Number.isFinite(v) || v < 0 || v > 999999) throw new Error(`非法值 "${k}": ${v}`);
+      }
       localStorage.setItem('shadowContract_gold', JSON.stringify(db));
       // 立即应用到当前 squad（如果已生成）
       if(state.squad){
@@ -5353,6 +5563,7 @@ function bindSaveButtons(){
 function bindButtons(){
   mpInit();
   bindSaveButtons();
+  bindCloudButtons();
   document.getElementById('start-btn').addEventListener('click',()=>{
     document.getElementById('menu').style.display='none';
     document.getElementById('ui').style.display='block';

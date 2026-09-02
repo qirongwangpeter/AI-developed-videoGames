@@ -4,3 +4,6 @@ Thumbs.db
 *.log
 .vscode/
 .idea/
+# Cloudflare Worker 本地构建产物
+worker/.wrangler/
+worker/dist/

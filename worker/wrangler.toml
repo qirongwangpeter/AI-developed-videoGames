@@ -1,0 +1,11 @@
+name = "shadowcontract-gold"
+main = "index.js"
+compatibility_date = "2024-09-01"
+
+# 部署后会生成 https://shadowcontract-gold.<你的子域>.workers.dev
+# 把这个 URL 粘到游戏菜单的 "云存档 URL" 输入框
+
+# KV 命名空间（运行 `wrangler kv:namespace create GOLD` 生成 id，把它填到下面）
+# [[kv_namespaces]]
+# binding = "GOLD"
+# id = "粘贴你的 KV namespace id"
