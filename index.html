@@ -2678,7 +2678,11 @@ const SQUAD_DEF = [
   {id:'maojq', name:'毛佳倩',icon:'倩',color:'#cc6acc',role:'ANW 医疗兵',skill:'群体回血+复活全员',cdMax:40,weapon:'MP5',secondary:'GLOCK',
     opts:{body:0x4a2a4a,vest:0x6a2a6a,vestText:'ANW·医疗',pouches:true,medicCross:true,ponytail:true,glasses:true,detail:'maojq'}},
   {id:'maobw', name:'毛博文',icon:'博',color:'#cc8a3a',role:'ANW 重机枪手',skill:'重机枪压制扫射',cdMax:35,weapon:'M249',secondary:'DEAGLE',
-    opts:{body:0x4a3a20,vest:0x5a4a25,vestText:'ANW·重火',helmet:0x222,pouches:true,kneepads:true,heavyArmor:true,detail:'maobw'}}
+    opts:{body:0x4a3a20,vest:0x5a4a25,vestText:'ANW·重火',helmet:0x222,pouches:true,kneepads:true,heavyArmor:true,detail:'maobw'}},
+  {id:'pengjl',name:'彭家乐',icon:'乐',color:'#3acccc',role:'ANW 工程兵',skill:'防御工事+全员护盾',cdMax:35,weapon:'M4A1',secondary:'GLOCK',
+    opts:{body:0x1a4a4a,vest:0x2a5a5a,vestText:'ANW·工程',helmet:0x333333,pouches:true,kneepads:true,glasses:true,detail:'pengjl'}},
+  {id:'zhouhh',name:'周华航',icon:'航',color:'#aa66cc',role:'ANW 侦察兵',skill:'全图扫描+标记所有敌人',cdMax:30,weapon:'MP5',secondary:'GLOCK',
+    opts:{body:0x3a2a4a,vest:0x4a3a5a,vestText:'ANW·侦察',boonie:0x2a2a3a,pouches:true,nvg:true,glasses:true,detail:'zhouhh'}}
 ];
 const VM_HIP=new THREE.Vector3(0.18,-0.18,-0.32);
 const VM_AIM=new THREE.Vector3(0,-0.07,-0.22);
@@ -2714,6 +2718,8 @@ const cloud = {
   lastSync: 0,
   pushTimer: null,
   pushing: false,
+  failCount: 0,
+  lockUntil: 0,
 };
 function cloudReady(){
   return cloud.enabled && cloud.url && cloud.user && cloud.pin;
@@ -2727,6 +2733,10 @@ function cloudSetStatus(msg, color){
 }
 async function cloudLoad(){
   if(!cloudReady()) return null;
+  if(Date.now() < cloud.lockUntil){
+    cloudSetStatus('☁ 连接被锁定，请稍后再试', '#c8302a');
+    return null;
+  }
   try {
     const u = cloud.url.replace(/\/+$/, '') + '/load?user=' + encodeURIComponent(cloud.user) + '&pin=' + encodeURIComponent(cloud.pin);
     const r = await fetch(u);
@@ -2736,12 +2746,15 @@ async function cloudLoad(){
     return j.db || {};
   } catch(e){
     console.warn('[cloud] load failed', e);
+    cloud.failCount++;
+    if(cloud.failCount >= 5){ cloud.lockUntil = Date.now() + 60000; cloud.failCount = 0; }
     cloudSetStatus('☁ 拉取失败：'+e.message, '#c8302a');
     return null;
   }
 }
 async function cloudSave(db){
   if(!cloudReady() || cloud.pushing) return false;
+  if(Date.now() < cloud.lockUntil) return false;
   cloud.pushing = true;
   try {
     const r = await fetch(cloud.url.replace(/\/+$/, '') + '/save', {
@@ -2756,6 +2769,8 @@ async function cloudSave(db){
     return true;
   } catch(e){
     console.warn('[cloud] save failed', e);
+    cloud.failCount++;
+    if(cloud.failCount >= 5){ cloud.lockUntil = Date.now() + 60000; cloud.failCount = 0; }
     cloudSetStatus('☁ 推送失败：'+e.message, '#c8302a');
     return false;
   } finally {
@@ -3698,10 +3713,10 @@ function updateAIMate(sm,dt){
   }
   const role=sm.def.id;
   // OPT: 降低 AI 队员射程和射速，让玩家来主导战斗
-  const myRange=role==='ghost'?70:role==='wangqr'?40:role==='maobw'?45:role==='soap'?28:35;
-  const myFR=role==='ghost'?1500:role==='wangqr'?280:role==='maobw'?220:role==='soap'?420:500;
-  const myAcc=role==='ghost'?0.85:role==='wangqr'?0.5:0.65;
-  const myDmg=role==='ghost'?60:role==='wangqr'?12:role==='maobw'?14:role==='soap'?20:18;
+  const myRange=role==='ghost'?70:role==='wangqr'?40:role==='maobw'?45:role==='soap'?28:role==='pengjl'?38:role==='zhouhh'?50:35;
+  const myFR=role==='ghost'?1500:role==='wangqr'?280:role==='maobw'?220:role==='soap'?420:role==='pengjl'?350:role==='zhouhh'?600:500;
+  const myAcc=role==='ghost'?0.85:role==='wangqr'?0.5:role==='zhouhh'?0.7:0.65;
+  const myDmg=role==='ghost'?60:role==='wangqr'?12:role==='maobw'?14:role==='soap'?20:role==='pengjl'?16:role==='zhouhh'?15:18;
   let bestE=null,bestS=Infinity;
   for(const e of state.enemies){
     if(e.hp<=0||!e.active) continue;
@@ -3868,6 +3883,37 @@ function useSkill(){
       }, i*30);
     }
     log(`毛博文：火力压制！命中 ${hit} 名敌人`,d.color);
+  } else if(d.id==='pengjl'){
+    // 工程兵：防御工事 — 全队护盾 +100，身边放置沙袋掩体，回复护甲
+    state.squad.forEach(s=>{
+      if(s.dead) return;
+      s.armor = Math.min(s.armorMax||100, s.armor+100);
+      s.shield = (s.shield||0) + 100; // 工程兵特有：额外护盾层
+    });
+    // 放置一个视觉沙袋掩体
+    const sandbag = new THREE.Group();
+    for(let i=0;i<3;i++){
+      const bag = new THREE.Mesh(new THREE.BoxGeometry(0.8,0.3,0.4), new THREE.MeshStandardMaterial({color:0x8a7a5a,roughness:0.9}));
+      bag.position.set((i-1)*0.85, 0.15 + (i===1?0.3:0), 0);
+      sandbag.add(bag);
+    }
+    sandbag.position.copy(a.pos);
+    sandbag.position.y = 0;
+    sandbag.rotation.y = a.yaw;
+    state.scene.add(sandbag);
+    setTimeout(()=>{ try{ state.scene.remove(sandbag); }catch(e){} }, 15000);
+    log('彭家乐：防御工事！全队 +100 护甲 +100 护盾 (15s)',d.color);
+  } else if(d.id==='zhouhh'){
+    // 侦察兵：全图扫描 — 标记所有存活敌人 + 显示敌人位置 15 秒
+    let marked = 0;
+    for(const e of state.enemies){
+      if(e.hp <= 0 || !e.active) continue;
+      e.marked = 15; // 15 秒标记
+      marked++;
+    }
+    // 短时加速方便侦察兵走位
+    state.dashBuff = 6;
+    log(`周华航：全图扫描！标记 ${marked} 名敌人 (15s) + 速度提升 (6s)`,d.color);
   }
   updateSquadUI();
 }
@@ -3918,6 +3964,8 @@ function initInput(){
     if(e.code==='Digit6') setActive(5);
     if(e.code==='Digit7') setActive(6);
     if(e.code==='Digit8') setActive(7);
+    if(e.code==='Digit9') setActive(8);
+    if(e.code==='Digit0') setActive(9);
     if(e.code==='KeyV') useSkill();
     if(e.code==='KeyG') throwGrenade();
     if(e.code==='KeyH') useMedkit();
@@ -4867,7 +4915,9 @@ const BASE_POSTS = [
   [35, 200],   // 东营房外
   [0, 213],    // 楼后中央走道
   [0, 230],    // 仓库间
-  [-22, 235]   // 远北
+  [-22, 235],  // 远北
+  [22, 235],   // 远北东侧
+  [0, 195]     // 中部掩体后
 ];
 
 function deploySquadMember(s){
@@ -4963,7 +5013,7 @@ function mpSetButtonsConnected(connected){
 // PeerJS 配置：开启详细日志 + 多个公网 ICE 服务器（含免费 TURN 中继，
 // 否则同时身处对称 NAT / 公司防火墙的两端 WebRTC 直连一定会失败）
 const PEER_CONFIG = {
-  debug: 2,
+  debug: 0,
   config: {
     iceServers: [
       { urls: 'stun:stun.l.google.com:19302' },
@@ -5485,7 +5535,14 @@ function bindSaveButtons(){
     try {
       const json = decodeURIComponent(escape(atob(raw.slice(4))));
       const db = JSON.parse(json);
-      if(typeof db !== 'object' || db === null) throw new Error('解析后不是对象');
+      if(typeof db !== 'object' || db === null || Array.isArray(db)) throw new Error('解析后不是对象');
+      // 安全验证：每个值必须是 0~999999 的有限数字，最多 50 键
+      const dbKeys = Object.keys(db);
+      if(dbKeys.length > 50) throw new Error('键数过多（上限 50）');
+      for(const k of dbKeys){
+        const v = db[k];
+        if(typeof v !== 'number' || !Number.isFinite(v) || v < 0 || v > 999999) throw new Error(`非法值 "${k}": ${v}`);
+      }
       localStorage.setItem('shadowContract_gold', JSON.stringify(db));
       // 立即应用到当前 squad（如果已生成）
       if(state.squad){

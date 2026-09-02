@@ -12,6 +12,11 @@ const CORS = {
   'Access-Control-Max-Age': '86400',
 };
 
+const RATE_LIMIT_WINDOW = 60; // 秒
+const RATE_LIMIT_MAX = 20;    // 每窗口最大请求数
+const GOLD_MAX_PER_CHAR = 999999; // 单角色金币上限
+const GOLD_MAX_KEYS = 50;        // db 最多键数
+
 function json(status, obj) {
   return new Response(JSON.stringify(obj), {
     status,
@@ -33,6 +38,32 @@ function validPin(p) {
   return typeof p === 'string' && /^[0-9]{4,12}$/.test(p);
 }
 
+function validDb(db) {
+  if (db == null || typeof db !== 'object' || Array.isArray(db)) return false;
+  const keys = Object.keys(db);
+  if (keys.length > GOLD_MAX_KEYS) return false;
+  for (const k of keys) {
+    const v = db[k];
+    if (typeof v !== 'number' || !Number.isFinite(v) || v < 0 || v > GOLD_MAX_PER_CHAR) return false;
+  }
+  return true;
+}
+
+async function checkRate(env, ip) {
+  const key = `rl:${ip}`;
+  const raw = await env.GOLD.get(key);
+  let count = 0, windowStart = Math.floor(Date.now() / 1000 / RATE_LIMIT_WINDOW) * RATE_LIMIT_WINDOW;
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed.w === windowStart) count = parsed.c;
+    } catch {}
+  }
+  count++;
+  await env.GOLD.put(key, JSON.stringify({ w: windowStart, c: count }), { expirationTtl: RATE_LIMIT_WINDOW * 2 });
+  return count <= RATE_LIMIT_MAX;
+}
+
 export default {
   async fetch(req, env) {
     // CORS preflight
@@ -42,6 +73,12 @@ export default {
 
     if (!env.GOLD) {
       return text(500, 'KV namespace "GOLD" 未绑定。去 Worker Settings → Variables → KV Namespace Bindings 添加 GOLD = 你的 KV。');
+    }
+
+    // 速率限制：按 IP 限制
+    const ip = req.headers.get('CF-Connecting-IP') || req.headers.get('X-Forwarded-For') || 'unknown';
+    if (!(await checkRate(env, ip))) {
+      return json(429, { error: '请求过于频繁，请稍后再试' });
     }
 
     const url = new URL(req.url);
@@ -60,7 +97,7 @@ export default {
         const { user, pin, db } = body || {};
         if (!validUser(user)) return json(400, { error: '用户名必须 2-32 位字母/数字/-/_' });
         if (!validPin(pin))   return json(400, { error: 'PIN 必须 4-12 位数字' });
-        if (db == null || typeof db !== 'object') return json(400, { error: 'db 必须是对象' });
+        if (!validDb(db)) return json(400, { error: 'db 必须是对象，值须为 0~999999 的数字，最多 50 键' });
 
         const stored = await env.GOLD.get(`pin:${user}`);
         if (stored && stored !== pin) return json(403, { error: 'PIN 不匹配 — 这个用户名已被占用' });
